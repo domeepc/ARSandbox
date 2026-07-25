@@ -21,6 +21,7 @@ building until that drift actually becomes a problem in use.
 #include <QObject>
 #include <QString>
 #include <QByteArray>
+#include <QElapsedTimer>
 
 class QTimer;
 class QSocketNotifier;
@@ -34,7 +35,12 @@ class Pipe:public QObject
 	explicit Pipe(const QString& path,QObject* parent=nullptr);
 	~Pipe() override;
 
-	bool connected() const {return fd>=0;}
+	/* Connected means the sandbox is actually alive, judged by whether a status
+	   line has arrived recently -- not by whether a descriptor is open. A FIFO
+	   write descriptor stays valid after the reader exits, so an open descriptor
+	   is not evidence of a peer; the sandbox pushes status twice a second, so
+	   silence is. */
+	bool connected() const {return alive;}
 
 	/* Sends a command line to the sandbox. Returns false if it could not be
 	   delivered, in which case the panel drops back to reconnecting. */
@@ -52,17 +58,25 @@ class Pipe:public QObject
 	/* The sandbox asked the panel to open the calibration dialog. */
 	void showCalibrationRequested();
 
+	/* The sandbox's right click asked for the context menu. */
+	void showMenuRequested();
+
 	private slots:
 	void tryOpen();
 	void readStatus();
+	void checkAlive();
 
 	private:
 	void close();
 	void closeStatus();
+	void setAlive(bool newAlive);
 
 	QString path;
 	int fd;
 	QTimer* retryTimer;
+
+	bool alive; // Whether a status line has arrived recently
+	QElapsedTimer sinceStatus; // Time since the last status line
 
 	/* The sandbox reports back on a second FIFO alongside the command one, so
 	   neither side needs a separate option for its path. */

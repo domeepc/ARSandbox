@@ -13,18 +13,47 @@ namespace {
 /* How often to retry opening the FIFO while the sandbox is not running: */
 constexpr int retryIntervalMs=1000;
 
+/* Silence longer than this means the sandbox is gone. The sandbox sends status
+   every 500 ms, so this allows a couple of missed updates before reporting a
+   disconnection. */
+constexpr int statusTimeoutMs=2500;
+
 }
 
 Pipe::Pipe(const QString& sPath,QObject* parent)
 	:QObject(parent),path(sPath),fd(-1),retryTimer(new QTimer(this)),
-	 statusFd(-1),statusNotifier(nullptr)
+	 statusFd(-1),statusNotifier(nullptr),alive(false)
 	{
 	connect(retryTimer,&QTimer::timeout,this,&Pipe::tryOpen);
+	connect(retryTimer,&QTimer::timeout,this,&Pipe::checkAlive);
 	retryTimer->start(retryIntervalMs);
+	sinceStatus.start();
 
 	/* Attempt an immediate connection so a panel started after the sandbox is
 	   usable straight away: */
 	tryOpen();
+	}
+
+void Pipe::setAlive(bool newAlive)
+	{
+	if(alive==newAlive)
+		return;
+	alive=newAlive;
+	emit connectedChanged();
+	}
+
+void Pipe::checkAlive()
+	{
+	/* The sandbox sends status twice a second, so a couple of seconds of silence
+	   means it is gone -- whatever the descriptors say. */
+	if(alive&&sinceStatus.elapsed()>statusTimeoutMs)
+		{
+		setAlive(false);
+
+		/* Drop the write side too, so the next send reopens against a restarted
+		   sandbox rather than writing into a dead pipe. */
+		close();
+		}
 	}
 
 Pipe::~Pipe()
@@ -42,7 +71,12 @@ void Pipe::tryOpen()
 		{
 		/* O_RDONLY|O_NONBLOCK on a FIFO succeeds even with no writer, so this
 		   also covers the sandbox not being started yet. */
-		statusFd=::open((path+".status").toLocal8Bit().constData(),O_RDONLY|O_NONBLOCK);
+		/* O_CLOEXEC matters: the panel launches RawKinectViewer and friends with
+		   QProcess, and without it every one of those children inherits these
+		   descriptors and keeps the FIFO open after the panel exits. The sandbox
+		   then sees a reader on its status pipe, concludes a panel is listening,
+		   and silently stops launching one. */
+		statusFd=::open((path+".status").toLocal8Bit().constData(),O_RDONLY|O_NONBLOCK|O_CLOEXEC);
 		if(statusFd>=0)
 			{
 			statusNotifier=new QSocketNotifier(statusFd,QSocketNotifier::Read,this);
@@ -57,7 +91,7 @@ void Pipe::tryOpen()
 	   exists, which would freeze the panel's event loop whenever the sandbox is
 	   not running. With O_NONBLOCK the call fails with ENXIO instead, which is
 	   the normal "sandbox not started yet" case and not worth logging. */
-	int newFd=::open(path.toLocal8Bit().constData(),O_WRONLY|O_NONBLOCK);
+	int newFd=::open(path.toLocal8Bit().constData(),O_WRONLY|O_NONBLOCK|O_CLOEXEC);
 	if(newFd<0)
 		{
 		if(errno!=ENXIO&&errno!=ENOENT)
@@ -65,8 +99,9 @@ void Pipe::tryOpen()
 		return;
 		}
 
+	/* Opening the write side says nothing about whether the sandbox is alive, so
+	   it does not change the connected state; only arriving status does. */
 	fd=newFd;
-	emit connectedChanged();
 	}
 
 void Pipe::close()
@@ -76,7 +111,6 @@ void Pipe::close()
 
 	::close(fd);
 	fd=-1;
-	emit connectedChanged();
 	}
 
 void Pipe::closeStatus()
@@ -109,6 +143,10 @@ void Pipe::readStatus()
 		return;
 		}
 
+	/* Traffic is the only reliable evidence that the sandbox is running: */
+	sinceStatus.restart();
+	setAlive(true);
+
 	statusBuffer.append(chunk,got);
 
 	/* Process whole lines only; a write can be split across reads. */
@@ -128,6 +166,11 @@ void Pipe::readStatus()
 		if(line=="showCalibration")
 			{
 			emit showCalibrationRequested();
+			continue;
+			}
+		if(line=="showMenu")
+			{
+			emit showMenuRequested();
 			continue;
 			}
 
