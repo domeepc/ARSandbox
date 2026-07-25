@@ -14,6 +14,7 @@ restarted independently of the other.
 #include <QQmlContext>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QUrl>
 
 #include "pipe.h"
 #include "calibration.h"
@@ -43,7 +44,11 @@ int main(int argc,char* argv[])
 	engine.rootContext()->setContextProperty("pipe",&pipe);
 	engine.rootContext()->setContextProperty("calibration",&calibration);
 	engine.rootContext()->setContextProperty("pipePath",parser.value(pipeOption));
-	engine.loadFromModule("SandboxControl","Main");
+	/* Load the QML straight out of the binary's own resources rather than through
+	   the module import path, which resolves against the build directory and so
+	   only works when the executable is run from there. The sandbox starts this
+	   program by name from its menu, so it has to work from anywhere. */
+	engine.load(QUrl("qrc:/SandboxControl/Main.qml"));
 	if(engine.rootObjects().isEmpty())
 		return -1;
 

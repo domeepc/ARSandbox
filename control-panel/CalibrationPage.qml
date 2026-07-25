@@ -14,6 +14,64 @@ Item {
     // this plane, so shifting it moves what the map treats as zero elevation.
     property real seaLevel: 0
 
+    // Projector calibration progress, driven by the sandbox's status messages.
+    property bool capturing: false
+    property string projectorState: ""
+    property bool capturingCorners: false
+    property string cornerState: ""
+
+    Connections {
+        target: pipe
+        function onStatus(key, value) {
+            if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
+                key !== "calibrationDone" && key !== "calibrationAborted" &&
+                key !== "calibrationFailed" && key !== "calibrationNoTarget" &&
+                key !== "calibrationRejected") return
+
+            var f = value.split(" ")
+
+            if (f[0] === "corners") {
+                if (key === "calibrationStarted") {
+                    dialog.capturingCorners = true
+                    dialog.cornerState = "place the disk on the " + f.slice(2).join(" ") + " corner"
+                } else if (key === "calibrationProgress") {
+                    dialog.cornerState = "corner " + (parseInt(f[1]) + 1) + " of 4 \u2014 " +
+                                         f.slice(3).join(" ")
+                } else if (key === "calibrationNoTarget") {
+                    dialog.cornerState = "target not visible \u2014 place the disk flat on the corner"
+                } else if (key === "calibrationDone") {
+                    dialog.capturingCorners = false
+                    dialog.cornerState = "measured " + parseFloat(f[2]).toFixed(1) + " x " +
+                                         parseFloat(f[3]).toFixed(1) + " cm"
+                    calibration.refresh()
+                } else {
+                    dialog.capturingCorners = false
+                    dialog.cornerState = key === "calibrationRejected"
+                        ? "rejected: a corner was not on the sand" : ""
+                }
+                return
+            }
+
+            if (f[0] !== "projector") return
+
+            if (key === "calibrationStarted") {
+                dialog.capturing = true
+                dialog.projectorState = "point 1 of " + f[1]
+            } else if (key === "calibrationProgress") {
+                dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2]
+            } else if (key === "calibrationNoTarget") {
+                dialog.projectorState = "target not visible — place the disk on the crosshair"
+            } else if (key === "calibrationDone") {
+                dialog.capturing = false
+                dialog.projectorState = "done, residual " + parseFloat(f[1]).toFixed(1) + " px"
+                calibration.refresh()
+            } else {
+                dialog.capturing = false
+                dialog.projectorState = ""
+            }
+        }
+    }
+
     // Re-read the measurement files whenever this page becomes visible, so a
     // measurement taken since the panel started is picked up.
     onVisibleChanged: if (visible) calibration.refresh()
@@ -31,14 +89,14 @@ Item {
         font.pixelSize: 13
         font.bold: true
         font.capitalization: Font.AllUppercase
-        opacity: 0.6
+        opacity: 0.85
     }
 
     component Note: Label {
         Layout.fillWidth: true
         wrapMode: Text.Wrap
         font.pixelSize: 13
-        opacity: 0.6
+        opacity: 0.85
     }
 
     component Step: RowLayout {
@@ -46,6 +104,7 @@ Item {
         property string label
         property string detail
         property bool done: false
+        property string action: "Run"
         signal triggered()
 
         Layout.fillWidth: true
@@ -65,11 +124,11 @@ Item {
                 visible: step.detail !== ""
                 font.pixelSize: 12
                 font.family: "monospace"
-                opacity: 0.55
+                opacity: 0.85
             }
         }
         Button {
-            text: "Run"
+            text: step.action
             implicitHeight: dialog.touchTarget
             onClicked: step.triggered()
         }
@@ -108,13 +167,8 @@ Item {
         contentWidth: availableWidth
 
         ColumnLayout {
-            width: parent.width
-            anchors.margins: dialog.gap
-            spacing: dialog.gap
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.margins: dialog.gap
+                x: dialog.gap
+                width: dialog.width - 2 * dialog.gap
                 spacing: dialog.gap
 
                 Note {
@@ -144,13 +198,11 @@ Item {
                             ? "n · x = " + calibration.planeOffset.toFixed(3)
                             : "not measured"
                     done: calibration.boxLayoutDone
-                    onTriggered: calibration.runRawKinectViewer()
+                    action: "Grab"
+                    onTriggered: pipe.send("grabDepth /tmp/sarndbox-depth.pgm")
                 }
-                Note {
-                    text: "In RawKinectViewer, average the depth frames, fit a plane to the " +
-                          "flattened sand, then measure the four corners in the order lower " +
-                          "left, lower right, upper left, upper right."
-                }
+
+                DepthPicker { touchTarget: dialog.touchTarget }
 
                 GroupBox {
                     Layout.fillWidth: true
@@ -231,13 +283,39 @@ Item {
 
                 Step {
                     label: "3. Projector alignment"
-                    detail: calibration.projectorDone
-                            ? "measured " + calibration.projectorDate
-                            : "not measured — sandbox falls back to the default projection"
+                    detail: dialog.projectorState !== ""
+                            ? dialog.projectorState
+                            : (calibration.projectorDone
+                               ? "measured " + calibration.projectorDate
+                               : "not measured — sandbox falls back to the default projection")
                     done: calibration.projectorDone
-                    onTriggered: calibration.runCalibrateProjector(
-                        calibration.screens[screenBox.currentIndex].width,
-                        calibration.screens[screenBox.currentIndex].height)
+                    action: dialog.capturing ? "Abort" : "Start"
+                    onTriggered: {
+                        if (dialog.capturing)
+                            pipe.send("calibrateProjector abort")
+                        else
+                            pipe.send("calibrateProjector start " +
+                                      calibration.screens[screenBox.currentIndex].width + " " +
+                                      calibration.screens[screenBox.currentIndex].height + " 12")
+                    }
+                }
+
+                // The sandbox itself projects the target and finds the disk, so
+                // capture is one button rather than a separate application.
+                Button {
+                    Layout.fillWidth: true
+                    implicitHeight: dialog.touchTarget
+                    visible: dialog.capturing
+                    text: "Capture this point"
+                    onClicked: pipe.send("calibrateProjector capture")
+                }
+
+                Note {
+                    visible: dialog.capturing
+                    text: "The sandbox is showing a crosshair on the projection. Place the " +
+                          "disk target so its centre is on the crosshair and lies flat on the " +
+                          "sand, take your hands out of view, then capture. The crosshair " +
+                          "turns green when the target has been found."
                 }
 
                 RowLayout {
@@ -272,8 +350,6 @@ Item {
                     Item { Layout.fillWidth: true }
                 }
 
-                Item { Layout.fillHeight: true }
-            }
         }
     }
 }

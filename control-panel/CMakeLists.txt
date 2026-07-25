@@ -28,7 +28,7 @@ qt_add_executable(sandbox-control
 qt_add_qml_module(sandbox-control
 	URI SandboxControl
 	VERSION 1.0
-	QML_FILES Main.qml ControlsPage.qml CalibrationPage.qml
+	QML_FILES Main.qml ControlsPage.qml WaterPage.qml CalibrationPage.qml DepthPicker.qml
 )
 
 target_link_libraries(sandbox-control PRIVATE Qt6::Quick)
