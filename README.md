@@ -21,6 +21,7 @@ control panel, the calibration measured from this rig, and the documentation.
 | `docs/` | Documentation (Croatian) and images |
 | `scripts/` | Launch helper |
 | `install.sh` | One-shot installer for Debian/Ubuntu |
+| `packaging/` | Builds the `.deb`/`.rpm` releases (see below) |
 
 ## Installing
 
@@ -36,6 +37,13 @@ maintaining a fork that silently drifts.
 
 Useful overrides: `PREFIX` (default `/usr/local`), `SRCDIR` (default `~/src`),
 `JOBS`, `QT_PREFIX` if Qt 6 lives somewhere CMake will not find.
+
+Prefer not to build locally? Each [release](../../releases) also has a `.deb`
+(Debian/Ubuntu) and `.rpm` (Fedora) with the whole app — Vrui, the Kinect
+package, the sandbox and the control panel — prebuilt under `/opt/arsandbox`,
+with `arsandbox` and `sandbox-control` on your PATH. Built and packaged by
+`packaging/build.sh` in CI; not hardware-tested, same caveat as everything
+else here without a Kinect attached.
 
 Requirements: **Linux**, a Kinect v1 (Xbox 360), a projector above the box, and
 Qt 6.4+ for the panel. See [macOS](#macos).
@@ -229,8 +237,9 @@ through XQuartz is unreliable, and the Kinect's isochronous transfers are
 libusb's least dependable macOS route. The OpenGL requirements would actually be
 met by the legacy 2.1 profile, but that only gets to the starting line.
 
-The release workflow builds `sandbox-control` for macOS. Reasoning and evidence:
-[docs/macos.md](docs/macos.md).
+The release workflow no longer builds `sandbox-control` for macOS; build it
+yourself from `control-panel/` with CMake and Qt 6 if you need it there.
+Reasoning and evidence: [docs/macos.md](docs/macos.md).
 
 ---
 

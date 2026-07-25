@@ -118,7 +118,8 @@ run-loop pass, so a permanently-readable descriptor spins harder than on Linux. 
 FIFO with no writer sits permanently at EOF, so the panel's habit of closing the
 status descriptor on EOF is load-bearing on macOS in a way it is not on Linux.
 
-The release workflow builds the panel for both platforms.
+The release workflow no longer builds the macOS panel; it builds and runs
+there, just build it yourself with CMake and Qt 6 from `control-panel/`.
 
 ## If a Mac must drive the sandbox
 
