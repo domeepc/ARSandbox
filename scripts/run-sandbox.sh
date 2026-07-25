@@ -38,4 +38,11 @@ echo
 # Add -fpv once CalibrateProjector has produced ProjectorMatrix.dat; before that
 # it has no effect, since the sandbox falls back to the default projection when
 # no calibration is present.
-exec "$SANDBOX_DIR/bin/SARndbox" -uhm -uhs -cp "$PIPE" "$@"
+# -mergeConfig strips Vrui's stock desktop tool bindings back to right click
+# only. Without it, left drag rotates the view and q/a/d/s/w/Space fly the
+# camera, either of which moves the projection off the sand.
+TOOLS="$SANDBOX_DIR/etc/SARndbox-2.8/SARndboxTools.cfg"
+MERGE=""
+[ -f "$TOOLS" ] && MERGE="-mergeConfig $TOOLS"
+
+exec "$SANDBOX_DIR/bin/SARndbox" -uhm -uhs -cp "$PIPE" $MERGE "$@"
