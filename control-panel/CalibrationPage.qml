@@ -19,10 +19,12 @@ Item {
     property string projectorState: ""
     property bool capturingCorners: false
     property string cornerState: ""
+    property bool projectorView: false
 
     Connections {
         target: pipe
         function onStatus(key, value) {
+            if (key === "projectorView") { dialog.projectorView = (value === "on"); return }
             if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
                 key !== "calibrationDone" && key !== "calibrationAborted" &&
                 key !== "calibrationFailed" && key !== "calibrationNoTarget" &&
@@ -320,6 +322,25 @@ Item {
                         implicitHeight: dialog.touchTarget
                         // On a two-display desk the projector is normally secondary.
                         currentIndex: count - 1
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: "Render from the projector"
+                        font.pixelSize: 15
+                        Layout.fillWidth: true
+                    }
+                    Switch {
+                        // Turned on automatically by a successful calibration. If
+                        // the result is bad the sand falls outside the projector
+                        // frustum and the window goes black, so this is the way
+                        // back without editing a file and restarting.
+                        checked: dialog.projectorView
+                        enabled: pipe.connected && calibration.projectorDone
+                        implicitHeight: dialog.touchTarget
+                        onToggled: pipe.send("projectorView " + (checked ? "on" : "off"))
                     }
                 }
 

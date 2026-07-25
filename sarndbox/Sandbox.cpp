@@ -377,6 +377,7 @@ void Sandbox::sendStatus(void)
 	status<<"pauseUpdates "<<(pauseUpdates?"on":"off")<<"\n";
 	status<<"waterSpeed "<<waterSpeed<<"\n";
 	status<<"waterMaxSteps "<<waterMaxSteps<<"\n";
+	status<<"projectorView "<<(!renderSettings.empty()&&renderSettings.front().fixProjectorView?"on":"off")<<"\n";
 
 	const std::string line=status.str();
 	ssize_t result=write(statusPipeFd,line.data(),line.size());
@@ -910,6 +911,15 @@ void Sandbox::finishProjectorCalibration(void)
 		}
 
 	mirrorCalibrationFile(projectionMatrixFileName);
+
+	/* Take the new calibration into use straight away rather than making the
+	   user restart with -fpv: the transform is per render settings and there is
+	   already a loader for it. */
+	for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+		{
+		rsIt->loadProjectorTransform(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
+		rsIt->fixProjectorView=rsIt->projectorTransformValid;
+		}
 
 	std::ostringstream done;
 	done<<"calibrationDone projector "<<res;
@@ -2118,6 +2128,20 @@ void Sandbox::frame(void)
 						                 (unsigned int)(atoi(tokens[3].c_str())),(unsigned int)(atoi(tokens[4].c_str())));
 					else
 						std::cerr<<"Usage: fitPlane <x0> <y0> <x1> <y1>"<<std::endl;
+					}
+				else if(isToken(tokens[0],"projectorView"))
+					{
+					/* The escape hatch. A calibration that puts the sand outside
+					   the projector frustum renders a black window, and without
+					   this the only way back is to edit a file and restart. */
+					if(tokens.size()==2)
+						{
+						bool on=isToken(tokens[1],"on");
+						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
+							rsIt->fixProjectorView=on&&rsIt->projectorTransformValid;
+						}
+					else
+						std::cerr<<"Usage: projectorView on|off"<<std::endl;
 					}
 				else if(isToken(tokens[0],"setExtents"))
 					{
