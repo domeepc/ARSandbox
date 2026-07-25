@@ -174,9 +174,13 @@ void Pipe::readStatus()
 			continue;
 			}
 
+		/* A status line may be a bare word with no value -- layoutReset is one.
+		   Dropping those silently meant the panel never heard about them. */
 		const int space=line.indexOf(' ');
 		if(space>0)
 			emit status(line.left(space),line.mid(space+1));
+		else
+			emit status(line,QString());
 		}
 	}
 
