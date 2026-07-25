@@ -92,7 +92,9 @@ class Sandbox:public Vrui::Application,public GLObject
 		GLsizei shadowBufferSize[2]; // Size of the shadow rendering frame buffer
 		GLuint shadowFramebufferObject; // Frame buffer object to render shadow maps
 		GLuint shadowDepthTextureObject; // Depth texture for the shadow rendering frame buffer
-		
+		GLuint colorTextureObject; // Texture holding the live color camera image shown during projector calibration
+		unsigned int colorTextureVersion; // Version number of the uploaded color texture
+
 		/* Constructors and destructors: */
 		DataItem(void);
 		virtual ~DataItem(void);
@@ -204,6 +206,15 @@ class Sandbox:public Vrui::Application,public GLObject
 	RemoteServer* remoteServer; // A server to stream bathymetry and water level grids to remote clients
 	Kinect::FrameSource* camera; // The Kinect camera device
 	unsigned int frameSize[2]; // Width and height of the camera's depth frames
+	bool colorStreamingEnabled; // Flag whether the camera is currently also streaming color frames
+	unsigned int colorFrameSize[2]; // Width and height of the camera's color frames
+	Threads::TripleBuffer<Kinect::FrameBuffer> colorFrames; // Triple buffer for incoming color frames, used only during projector calibration
+	Kinect::FrameBuffer currentColorFrame; // Most recent color frame locked in by frame()
+	unsigned int colorFrameVersion; // Bumped each time currentColorFrame changes
+	void setCameraStreaming(bool enableColor); // Restarts the camera, with or without the color stream
+	void colorFrameDispatcher(const Kinect::FrameBuffer& frameBuffer); // Callback receiving color frames from the Kinect camera
+	void bindColorTexture(GLContextData& contextData) const; // Binds the up-to-date color texture to the current texture unit
+	void drawCalibrationCameraView(GLContextData& contextData,const int viewport[4]) const; // Draws the live color image and disk marker in place of the topography during calibration
 	PixelDepthCorrection* pixelDepthCorrection; // Buffer of per-pixel depth correction coefficients
 	Kinect::FrameSource::IntrinsicParameters cameraIps; // Intrinsic parameters of the Kinect camera
 	FrameFilter* frameFilter; // Processing object to filter raw depth frames from the Kinect camera
@@ -286,8 +297,18 @@ class Sandbox:public Vrui::Application,public GLObject
 	std::vector<TiePoint> tiePoints; // Correspondences collected so far
 	Threads::TripleBuffer<Geometry::Point<double,3> > lastDisk; // Most recently extracted disk centre
 	bool haveDisk; // Flag whether a disk is currently visible
+	bool diskEverSeenThisCalibration; // Flag whether a disk has been detected at least once since the current calibration started
 	double lastDiskTime; // Application time at which a disk was last extracted
 	std::string projectionMatrixFileName; // Path of the projector matrix file to write
+
+	/* Depth frames fed to the disk extractor are averaged over a short ring
+	   buffer to cut single-frame sensor noise, since the disk has to be held
+	   still to be captured anyway: */
+	static const unsigned int diskAveragingWindow=3;
+	Kinect::FrameBuffer diskAveragingRing[diskAveragingWindow];
+	unsigned int diskAveragingRingSize;
+	unsigned int diskAveragingRingNext;
+	Kinect::FrameBuffer averageDepthFrames(const Kinect::FrameBuffer& newFrame); // Pushes newFrame into the ring and returns the pixelwise average for disk extraction
 
 	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
 	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target

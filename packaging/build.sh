@@ -88,7 +88,25 @@ make VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEP
 
 say "Building the sandbox into $PREFIX"
 cd "$REPO/sarndbox"
-make -j"$JOBS" VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
+
+# Unlike Vrui, SARndbox has no separate "install destination" vs "runtime
+# path" split: its makefile bakes CONFIG_CONFIGDIR/CONFIG_SHADERDIR directly
+# into the tracked Config.h (and from there into the linked binaries) from
+# whatever INSTALLDIR is given at build time - see install.sh's own warning
+# above its sarndbox build step. Build with the real $PREFIX so the shipped
+# binaries look for their config/shaders at their real final location, then
+# copy the results into the staging tree ourselves: re-running `make
+# install` with INSTALLDIR=$STAGEPREFIX would rewrite Config.h with the
+# staging path and force a recompile that bakes the wrong path in.
+make -j"$JOBS" VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$PREFIX"
+install -d "$STAGEPREFIX/bin"
+install bin/CalibrateProjector bin/SARndbox bin/SARndboxClient "$STAGEPREFIX/bin"
+CONFIGDIR=$(echo etc/SARndbox-*)
+RESOURCEDIR=$(echo share/SARndbox-*)
+install -d "$STAGEPREFIX/$CONFIGDIR"
+install -m u=rw,go=r "$CONFIGDIR"/* "$STAGEPREFIX/$CONFIGDIR"
+install -d "$STAGEPREFIX/$RESOURCEDIR/Shaders"
+install -m u=rw,go=r "$RESOURCEDIR"/Shaders/* "$STAGEPREFIX/$RESOURCEDIR/Shaders"
 
 # ---------------------------------------------------------------- control panel
 
