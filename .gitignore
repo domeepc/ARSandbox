@@ -15,3 +15,7 @@ control-panel/build/
 # ever be stale and misleading.
 config/ProjectorMatrix.dat
 sarndbox/etc/SARndbox-2.8/ProjectorMatrix.dat
+
+# Calibration backups written by the sandbox when it rewrites a layout
+*.bak
+*.save
