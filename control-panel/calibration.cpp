@@ -156,11 +156,23 @@ QVariantList Calibration::screens() const
 	const QList<QScreen*> all=QGuiApplication::screens();
 	for(QScreen* screen:all)
 		{
-		const QSize s=screen->size();
+		/* QScreen::size() is in logical points, not device pixels. On a Retina
+		   display, or under fractional scaling, that is not the number of pixels
+		   the projector actually has -- on a 2x display it is exactly half.
+		   CalibrateProjector needs real pixels, and feeding it the wrong size
+		   produces a defective calibration with no error reported, so scale by
+		   the device pixel ratio. */
+		const qreal dpr=screen->devicePixelRatio();
+		const int w=int(qRound(screen->size().width()*dpr));
+		const int h=int(qRound(screen->size().height()*dpr));
+
 		QVariantMap entry;
-		entry["label"]=QString("%1  %2 x %3").arg(screen->name()).arg(s.width()).arg(s.height());
-		entry["width"]=s.width();
-		entry["height"]=s.height();
+		QString label=QString("%1  %2 x %3").arg(screen->name()).arg(w).arg(h);
+		if(dpr!=1.0)
+			label+=QString(" (%1x scaling)").arg(dpr);
+		entry["label"]=label;
+		entry["width"]=w;
+		entry["height"]=h;
 		list<<entry;
 		}
 	return list;
@@ -174,6 +186,13 @@ void Calibration::refresh()
 
 bool Calibration::launch(const QString& program,const QStringList& arguments)
 	{
+#ifndef Q_OS_LINUX
+	/* These are Vrui binaries and only exist where the sandbox itself runs, which
+	   is Linux. On any other platform the panel is a remote console and cannot
+	   start them. */
+	emit launchFailed(QString("%1 can only be started on the machine running the sandbox").arg(program));
+	return false;
+#else
 	/* Detached, because these are interactive tools the user works with for
 	   minutes at a time and the panel must stay responsive meanwhile: */
 	if(QProcess::startDetached(program,arguments,sandboxDir))
@@ -181,6 +200,7 @@ bool Calibration::launch(const QString& program,const QStringList& arguments)
 
 	emit launchFailed(QString("Could not start %1").arg(program));
 	return false;
+#endif
 	}
 
 bool Calibration::runKinectUtil()
