@@ -1170,7 +1170,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 waterSpeedSlider(0),waterMaxStepsSlider(0),frameRateTextField(0),waterAttenuationSlider(0),
 	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0),
 	 pendingPlaneValid(false),numPendingCorners(0),
-	 diskExtractor(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false)
+	 diskExtractor(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),lastDiskTime(0.0)
 	{
 	/* Read the sandbox's default configuration parameters: */
 	std::string sandboxConfigFileName=CONFIG_CONFIGDIR;
@@ -2182,9 +2182,13 @@ void Sandbox::frame(void)
 			}
 		}
 	
-	/* Pick up the newest extracted calibration target, if any: */
+	/* Pick up the newest extracted calibration target, if any. The extractor only
+	   reports when it finds a disk, never when one leaves, so presence is judged
+	   by how recently it last reported: a flag set on arrival would latch on and
+	   the crosshair would stay green after the target was taken away. */
 	if(calibratingProjector&&lastDisk.lockNewValue())
-		haveDisk=true;
+		lastDiskTime=Vrui::getApplicationTime();
+	haveDisk=calibratingProjector&&Vrui::getApplicationTime()-lastDiskTime<0.3;
 
 	/* Push state to the control panel a couple of times a second. Sending it per
 	   frame would be 60 writes a second for values a human is reading. */

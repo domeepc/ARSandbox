@@ -285,6 +285,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	std::vector<TiePoint> tiePoints; // Correspondences collected so far
 	Threads::TripleBuffer<Geometry::Point<double,3> > lastDisk; // Most recently extracted disk centre
 	bool haveDisk; // Flag whether a disk is currently visible
+	double lastDiskTime; // Application time at which a disk was last extracted
 	std::string projectionMatrixFileName; // Path of the projector matrix file to write
 
 	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
