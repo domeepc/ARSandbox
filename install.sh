@@ -86,6 +86,12 @@ else
 		sed -i 's/ALCdevice_struct/ALCdevice/g; s/ALCcontext_struct/ALCcontext/g' Vrui/SoundContext.h
 	fi
 
+	# FrameRateViewer.h uses size_t without including <cstddef>. Older GCC
+	# pulled it in transitively via other standard headers; GCC 13+ does not,
+	# so the build fails with "size_t does not name a type".
+	grep -q "#include <cstddef>" Vrui/Vislets/FrameRateViewer.h || \
+		sed -i '/#include <Vrui\/Vislet.h>/a #include <cstddef>' Vrui/Vislets/FrameRateViewer.h
+
 	make -j"$JOBS" INSTALLDIR="$PREFIX"
 	sudo make INSTALLDIR="$PREFIX" install
 	sudo make INSTALLDIR="$PREFIX" installudevrules
