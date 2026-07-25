@@ -35,12 +35,15 @@ echo
 # -uhs  enable hill shading, without which the relief shading settings do nothing
 # -cp   control pipe
 #
-# Add -fpv once CalibrateProjector has produced ProjectorMatrix.dat; before that
-# it has no effect, since the sandbox falls back to the default projection when
-# no calibration is present.
 # -mergeConfig strips Vrui's stock desktop tool bindings back to right click
-# only. Without it, left drag rotates the view and q/a/d/s/w/Space fly the
-# camera, either of which moves the projection off the sand.
+# only, and turns off the red tool kill zone Vrui otherwise draws into the scene.
+# Unbinding the navigation tools is also what stops the view being tumbled off
+# the sand by a stray drag.
+#
+# -fpv renders from the projector's viewpoint and is what you eventually want,
+# but only once ProjectorMatrix.dat is a good calibration: with a bad one the
+# sand falls outside the resulting frustum and the window is simply black. Add
+# it here after the projector calibration has been redone and checked.
 TOOLS="$SANDBOX_DIR/etc/SARndbox-2.8/SARndboxTools.cfg"
 MERGE=""
 [ -f "$TOOLS" ] && MERGE="-mergeConfig $TOOLS"
