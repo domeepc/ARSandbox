@@ -116,8 +116,16 @@ ColumnLayout {
             opacity: 0.7
         }
 
-        function toDepthX(mx) { return Math.round(mx * 640 / frame.width) }
-        function toDepthY(my) { return Math.round(my * 480 / frame.height) }
+        function toDepthX(mx) {
+            return Math.max(0, Math.min(639, Math.round(mx * 640 / frame.width)))
+        }
+
+        // The image is written bottom-up so it displays the right way up, so a
+        // click's y has to be flipped back into depth image rows. This must stay
+        // in step with grabDepthImage in the sandbox.
+        function toDepthY(my) {
+            return Math.max(0, Math.min(479, Math.round((frame.height - my) * 480 / frame.height)))
+        }
 
         Rectangle {
             id: selection

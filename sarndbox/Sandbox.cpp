@@ -458,11 +458,19 @@ void Sandbox::grabDepthImage(const char* fileName)
 		return;
 		}
 	fprintf(f,"P5\n%u %u\n255\n",size[0],size[1]);
-	for(unsigned int i=0;i<size[0]*size[1];++i)
-		{
-		int v=dPtr[i]==0.0f?0:int((dPtr[i]-lo)*254.0f/(hi-lo))+1;
-		fputc(v<0?0:(v>255?255:v),f);
-		}
+
+	/* Rows go out bottom-up. The depth image follows the OpenGL convention with
+	   row 0 at the bottom, while PGM's first row is the top, so writing them in
+	   order shows the scene upside down. The panel flips its y mapping to match,
+	   and the two have to agree: a click that lands on the wrong depth row
+	   silently measures the wrong part of the sandbox. */
+	for(int y=int(size[1])-1;y>=0;--y)
+		for(unsigned int x=0;x<size[0];++x)
+			{
+			const GLfloat d=dPtr[(unsigned int)(y)*size[0]+x];
+			int v=d==0.0f?0:int((d-lo)*254.0f/(hi-lo))+1;
+			fputc(v<0?0:(v>255?255:v),f);
+			}
 	fclose(f);
 
 	std::ostringstream done;
