@@ -907,3 +907,160 @@ računalni resursi bili ograničeni. Binarna odluka pri iscrtavanju izohipsi, sr
 razlika preko jednog slikovnog elementa i razmjerno grubo vremensko usrednjavanje
 dubinske slike sve su redom razumni kompromisi za sklopovlje iz 2012. godine, koji na
 suvremenom sklopovlju postaju nepotrebni.
+
+---
+
+# Dodatak C: Upute za uporabu, korak po korak
+
+Ovaj dodatak opisuje postupak pokretanja i umjeravanja sustava nakon što je
+programska podrška izgrađena i instalirana.
+
+## C.1. Instalacija
+
+Cjelokupan postupak instalacije obuhvaćen je skriptom `install.sh` u korijenu
+repozitorija:
+
+```bash
+./install.sh
+```
+
+Skripta instalira potrebne pakete distribucije, zatim gradi i instalira
+biblioteku Vrui i njezin paket Kinect ako već nisu prisutni, te naposljetku
+gradi sam sustav SARndbox i upravljačku ploču. Biblioteka Vrui namjerno nije
+uključena u repozitorij, nego se preuzima s autorova poslužitelja: riječ je o
+opsežnom alatu s vlastitim ciklusom izdanja, pa bi njegova pohrana u ovom
+repozitoriju značila održavanje odvojka koji neprimjetno zaostaje za izvornikom.
+
+Skripta pritom automatski primjenjuje ispravke opisane u poglavljima 1 i 2 ovog
+dokumenta: bira dostupan naziv paketa `libdc1394` te, ako je potrebno, ispravlja
+unaprijedne deklaracije tipova `ALCdevice` i `ALCcontext` u datoteci
+`Vrui/SoundContext.h`.
+
+## C.2. Pokretanje
+
+```bash
+scripts/run-sandbox.sh
+```
+
+Skripta stvara dva imenovana kanala za upravljanje, primjenjuje ograničena
+pridruživanja alata biblioteke Vrui te pokreće sustav. Pri prvom pokretanju
+ispisuje se obavijest:
+
+```
+No projector calibration yet; using the default projection.
+```
+
+Riječ je o očekivanoj obavijesti, a ne o pogrešci: projekcija još nije poravnata
+s površinom pijeska, što se postiže tek u koraku C.6.
+
+## C.3. Otvaranje upravljačke ploče
+
+Desnim klikom bilo gdje nad prikazom sustava otvara se upravljačka ploča. Ako je
+ploča već otvorena, prikazuje se kontekstni izbornik:
+
+![Kontekstni izbornik](images/panel-menu.png)
+
+Izbornik se prikazuje na zaslonu upravljačke ploče, a ne u projekciji. Izbornik
+iscrtan u projekciju pao bi na površinu pijeska i preko njega bi se iscrtavala
+topografija, što je i bio razlog zamjene izvornog izbornika ugrađenog u
+aplikaciju.
+
+Sva ostala pridruživanja ulaznih uređaja namjerno su uklonjena. Zadana
+pridruživanja biblioteke Vrui postavljaju upravljanje pogledom na povlačenje
+lijevom tipkom miša, kotačić miša te tipke `q`, `a`, `d`, `s`, `w` i razmaknicu.
+Svako od njih pomiče projekciju s površine pijeska, pa bi posjetitelj koji se
+nasloni na tipkovnicu mogao poništiti provedeno umjeravanje. Datoteka
+`config/SARndboxTools.cfg` uklanja sva ta pridruživanja.
+
+## C.4. Unutarnji parametri kamere
+
+U kartici **Calibration** pokreće se prvi korak, koji preuzima tvorničke
+parametre iz same kamere. Parametri su vezani uz pojedinu kameru — datoteka je
+imenovana prema serijskom broju i ne vrijedi za drugu kameru Kinect.
+
+## C.5. Temeljna ravnina i granice površine pijeska
+
+![Kartica za umjeravanje](images/panel-calibration.png)
+
+Pritiskom na **Grab depth image** trenutačna se slika dubine prenosi u
+upravljačku ploču, nakon čega slijedi:
+
+1. **Povlačenjem se označi pravokutno područje** nad izravnatom površinom
+   pijeska, uz izbjegavanje stranica sanduka. Ravnina se prilagođava isključivo
+   označenom području. Upravo je to bitno: prilagodba ravnine cjelokupnoj slici
+   dubine ne može razlučiti pijesak od ostatka prostorije i završava na onoj
+   plohi koja u vidnom polju prevladava.
+2. **Klikom se označe četiri kuta** površine pijeska, i to redom: donji lijevi,
+   donji desni, gornji lijevi, gornji desni. Svaki klik dojavljuje jedan
+   prostorni položaj.
+3. Pritisne se **Write BoxLayout.txt**.
+
+Datoteka se ne mijenja sve do posljednjeg pritiska, pa pogrešan klik stoji samo
+ponavljanja postupka, a ne izgubljenog umjeravanja. Prethodna se datoteka čuva s
+nastavkom `.bak`.
+
+Upravljačka ploča zatim provjerava vjerodostojnost rezultata:
+
+| Provjera | Značenje |
+|----------|----------|
+| Otklon od optičke osi | Kamera je usmjerena gotovo okomito prema dolje, pa ispravna prilagodba daje nekoliko stupnjeva. Velik kut znači da je prilagodba obuhvatila stranicu sanduka. |
+| Rezidual kutova | Udaljenost izmjerenih kutova od prilagođene ravnine. |
+| Nesrazmjer nasuprotnih stranica | Radna je površina pravokutna, pa nasuprotne stranice moraju biti podjednake. Velika vrijednost znači netočno označen kut. |
+
+Svaka od navedenih provjera pokriva način na koji mjerenje može ispasti
+neispravno, a da pritom nastane datoteka koja se uredno učitava. Bez njih bi
+sustav jednostavno radio neispravno, bez ijednog pokazatelja uzroka.
+
+## C.6. Umjeravanje projektora
+
+U istoj kartici odabire se projektor s padajućeg popisa. Odabir valja provjeriti
+prema specifikaciji projektora, jer pogrešna razlučivost daje neispravno
+umjeravanje bez ikakve dojave o pogrešci. Zaslon zakrenut alatom `xrandr`
+prijavljuje zakrenute dimenzije.
+
+Pritiskom na **Start** sustav projicira križić. Plosnati kružni mjerni cilj s
+označenim središtem — primjerice optički disk s prilijepljenim papirnatim krugom
+— postavlja se ravno na pijesak tako da mu se središte poklopi s križićem, ruke
+se uklone iz vidnog polja i pritisne se **Capture this point**. Križić postaje
+zelen kada je cilj pronađen. Postupak se ponavlja za svih 12 točaka.
+
+Na kraju se dojavljuje efektivna vrijednost odstupanja u slikovnim elementima
+projektora, što je mjerodavan pokazatelj kakvoće provedenog umjeravanja.
+
+## C.7. Rad sustava
+
+![Kartica topografije](images/panel-topography.png)
+
+Razmak i debljina izohipsi, jačina sjenčanja reljefa te smjer izvora svjetla
+mijenjaju se tijekom rada, bez ponovnog pokretanja. Sjenčanje reljefa vidljivo je
+samo uz prekidač `-uhs`.
+
+![Kartica simulacije vode](images/panel-water.png)
+
+Brzina vode, najveći broj koraka i prigušenje također se mijenjaju tijekom rada.
+Ako simulacija ne uspijeva pratiti stvarno vrijeme, sustav to dojavljuje svakih
+nekoliko sekundi i navodi koji parametar treba promijeniti:
+
+```
+Water simulation is behind by 0.018 s per frame; raise waterMaxSteps
+(currently 50) or lower waterTableSize in SARndbox.cfg
+```
+
+## C.8. Sprega dvaju programa
+
+Upravljačka ploča upisuje naredbene retke u imenovani kanal koji sustav SARndbox
+već čita, a sustav svoje stanje dojavljuje natrag drugim kanalom na istoj putanji
+s dodanim nastavkom `.status`.
+
+Ploča stoga prikazuje stvarno stanje sustava, a ne samo posljednje poslane
+vrijednosti. Stanje se dojavljuje dvaput u sekundi, pa je naknadno pokrenuta
+ploča ispravna čim se poveže, dok se izostanak dojava dulji od nekoliko sekundi
+tumači kao prekid veze.
+
+Oba se programa mogu neovisno ponovno pokretati. Sustav zanemaruje signal
+`SIGPIPE` i nepostojanje ploče smatra uobičajenim stanjem, pa zatvaranje ploče ne
+može poremetiti rad sanduka.
+
+Svaka datoteka umjeravanja koju sustav zapiše istodobno se preslikava u
+direktorij `config/` (postavka `calibrationMirrorDir`), čime se sprječava
+razilaženje verzionirane preslike od one koju izvedbeni program stvarno čita.
