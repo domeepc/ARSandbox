@@ -76,9 +76,12 @@ else
 	cd "Vrui-$VRUI_VERSION"
 
 	# Vrui 8.0-002 declares ALCdevice/ALCcontext with the pre-1.20 OpenAL Soft
-	# names. Current OpenAL Soft dropped the _struct suffix, so the two
-	# declarations conflict and the build stops.
-	if grep -q "ALCdevice_struct" Vrui/SoundContext.h 2>/dev/null; then
+	# names. Only patch them away if this system's AL/alc.h has actually
+	# dropped the suffix - some distros (e.g. Ubuntu 22.04) still ship the
+	# old names, and patching there would make Vrui's header disagree with
+	# the system header instead of matching it.
+	if grep -q "ALCdevice_struct" Vrui/SoundContext.h 2>/dev/null \
+		&& ! grep -q "ALCdevice_struct" /usr/include/AL/alc.h 2>/dev/null; then
 		echo "patching Vrui/SoundContext.h for current OpenAL Soft"
 		sed -i 's/ALCdevice_struct/ALCdevice/g; s/ALCcontext_struct/ALCcontext/g' Vrui/SoundContext.h
 	fi

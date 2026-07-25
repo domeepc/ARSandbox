@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the control panel on Linux, a source archive of the
-# sandbox, and self-contained .deb/.rpm packages with the whole app
-# (Vrui + its Kinect package + the sandbox + the control panel) prebuilt.
+# Builds a source archive of the sandbox and self-contained .deb/.rpm
+# packages with the whole app (Vrui + its Kinect package + the sandbox +
+# the control panel) prebuilt.
 #
 # The .deb/.rpm builds take many minutes (Vrui and Kinect are large out-of-tree
 # toolkits) and, like the rest of this workflow, cannot be tested against a
@@ -23,37 +23,6 @@ permissions:
   contents: write
 
 jobs:
-  panel-linux:
-    name: Control panel (Linux)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Qt 6
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build \
-            qt6-base-dev qt6-declarative-dev \
-            qml6-module-qtquick qml6-module-qtquick-controls \
-            qml6-module-qtquick-layouts qml6-module-qtquick-window
-
-      - name: Build
-        run: |
-          cmake -S control-panel -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
-
-      - name: Stage
-        run: |
-          mkdir -p stage/sandbox-control-linux-x86_64
-          cp build/sandbox-control stage/sandbox-control-linux-x86_64/
-          cp README.md stage/sandbox-control-linux-x86_64/
-          tar -C stage -czf sandbox-control-linux-x86_64.tar.gz sandbox-control-linux-x86_64
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sandbox-control-linux-x86_64
-          path: sandbox-control-linux-x86_64.tar.gz
-
   source:
     name: Source archive
     runs-on: ubuntu-22.04
@@ -174,7 +143,7 @@ jobs:
 
   release:
     name: Publish
-    needs: [panel-linux, source, package-deb, package-rpm]
+    needs: [source, package-deb, package-rpm]
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -214,7 +183,3 @@ jobs:
             Like the rest of this workflow, the packages are built without a
             Kinect attached and are not hardware-tested in CI; if one doesn't
             work on your machine, `install.sh` is the fallback.
-
-            The prebuilt `sandbox-control` binaries above are the Qt control
-            panel only, for people who already have a sandbox built from
-            source and just want the panel.

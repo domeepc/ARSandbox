@@ -32,9 +32,13 @@ cd "$SRCDIR"
 [ -d "Vrui-$VRUI_VERSION" ] || wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Vrui/Vrui-$VRUI_VERSION.tar.gz" | tar xz
 cd "Vrui-$VRUI_VERSION"
 
-# See install.sh: current OpenAL Soft dropped the _struct suffix Vrui 8.0-002
-# expects.
-if grep -q "ALCdevice_struct" Vrui/SoundContext.h 2>/dev/null; then
+# See install.sh: Vrui 8.0-002 expects the pre-1.20 OpenAL Soft
+# ALCdevice_struct/ALCcontext_struct names. Only patch them away if this
+# system's AL/alc.h has actually dropped the suffix - some distros (e.g.
+# Ubuntu 22.04) still ship the old names, and patching there would make
+# Vrui's header disagree with the system header instead of matching it.
+if grep -q "ALCdevice_struct" Vrui/SoundContext.h 2>/dev/null \
+	&& ! grep -q "ALCdevice_struct" /usr/include/AL/alc.h 2>/dev/null; then
 	sed -i 's/ALCdevice_struct/ALCdevice/g; s/ALCcontext_struct/ALCcontext/g' Vrui/SoundContext.h
 fi
 
@@ -47,14 +51,14 @@ say "Building the Vrui Kinect package into $PREFIX"
 cd "$SRCDIR"
 [ -d "Kinect-$KINECT_VERSION" ] || wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" | tar xz
 cd "Kinect-$KINECT_VERSION"
-make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make"
-make VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
+make -j"$JOBS" VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make"
+make VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
 
 # -------------------------------------------------------------------- SARndbox
 
 say "Building the sandbox into $PREFIX"
 cd "$REPO/sarndbox"
-make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
+make -j"$JOBS" VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
 
 # ---------------------------------------------------------------- control panel
 
