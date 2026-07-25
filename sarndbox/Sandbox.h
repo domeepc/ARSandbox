@@ -22,9 +22,12 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #ifndef SANDBOX_INCLUDED
 #define SANDBOX_INCLUDED
 
+#include <vector>
+#include <string>
 #include <Threads/Mutex.h>
 #include <Threads/TripleBuffer.h>
 #include <Geometry/Box.h>
+#include <Geometry/PCACalculator.h>
 #include <Geometry/Rotation.h>
 #include <Geometry/OrthonormalTransformation.h>
 #include <Geometry/ProjectiveTransformation.h>
@@ -41,6 +44,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Vrui/Application.h>
 #include <Kinect/FrameBuffer.h>
 #include <Kinect/FrameSource.h>
+#include <Kinect/DiskExtractor.h>
 
 #include "Types.h"
 
@@ -231,11 +235,66 @@ class Sandbox:public Vrui::Application,public GLObject
 	GLMotif::TextField* frameRateTextField;
 	GLMotif::TextFieldSlider* waterAttenuationSlider;
 	int controlPipeFd; // File descriptor of an optional named pipe to send control commands to a running AR Sandbox
+	std::string controlPipeName; // Name of the command pipe, kept so the panel can be started with it
+	std::string controlPanelCommand; // Command used to start the control panel when it is not running
 	std::string statusPipeName; // Name of an optional named pipe reporting state back to a control panel
 	int statusPipeFd; // File descriptor of the status pipe, or -1 while no panel is listening
 	double nextStatusTime; // Application time at which to send the next status update
 	void sendStatus(void); // Writes the current state to the status pipe, if a panel is listening
-	void sendEvent(const char* event); // Sends a one-word event to the control panel
+	/* Base plane calibration. The sandbox measures its own geometry rather than
+	   relying on RawKinectViewer and a hand-edited layout file: it fits a plane
+	   to the sand surface over a run of filtered depth frames and writes the
+	   result to the sandbox layout file. */
+	Kinect::FrameBuffer lastFilteredFrame; // Most recent filtered depth frame, reused for the extents pass
+	/* Sand extent capture. The four corners are measured by placing the disk
+	   target on each corner of the box in turn, which is the only way to know
+	   where the sand actually ends: fitting to the depth image cannot tell the
+	   sandbox from the rest of the room. The base plane is then fitted to those
+	   four points, so it describes the sand surface by construction. */
+	Plane pendingPlane; // Plane fitted to a selected region, awaiting the corners
+	bool pendingPlaneValid; // Flag whether a plane has been fitted since the last write
+	Point pendingCorners[4]; // Corners extracted so far
+	unsigned int numPendingCorners; // How many corners have been extracted
+	std::string sandboxLayoutFileName; // Path of the layout file to read and write
+	std::string calibrationMirrorDir; // Directory to copy written calibration files into, or empty
+	void mirrorCalibrationFile(const std::string& fileName) const; // Copies a written calibration file into the mirror directory
+	bool unprojectPixel(unsigned int x,unsigned int y,Point& result) const; // Turns a depth image pixel into a 3D camera space point
+	void grabDepthImage(const char* fileName); // Writes the current filtered depth frame as a greyscale image for the panel to show
+	void fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Fits the base plane to a rectangle of the depth image
+	void extractPoint(unsigned int x,unsigned int y); // Reports the 3D position of one depth image pixel and keeps it as a corner
+	void writeSandboxLayout(void); // Writes the fitted plane and extracted corners to the layout file
+	void resetLayoutCapture(void); // Discards a partly captured layout
+
+	/* Projector calibration. Establishes the projective transform between camera
+	   space and the projected image by showing a target at a known projector
+	   position and finding a physical disk placed on it in the depth stream.
+	   Ported from the standalone CalibrateProjector so the sandbox can be
+	   calibrated in place, driven from the control panel. */
+	struct TiePoint // A correspondence between projector image and camera space
+		{
+		public:
+		Geometry::Point<double,2> p; // Position in projector image space
+		Geometry::Point<double,3> o; // Position in 3D camera space
+		};
+
+	Kinect::DiskExtractor* diskExtractor; // Finds the calibration target in the depth stream
+	bool calibratingProjector; // Flag whether a projector calibration is in progress
+	unsigned int projectorImageSize[2]; // Projector image size in pixels
+	unsigned int tiePointIndex; // Index of the target currently being shown
+	unsigned int numTiePoints; // Number of targets in the sequence
+	std::vector<TiePoint> tiePoints; // Correspondences collected so far
+	Threads::TripleBuffer<Geometry::Point<double,3> > lastDisk; // Most recently extracted disk centre
+	bool haveDisk; // Flag whether a disk is currently visible
+	std::string projectionMatrixFileName; // Path of the projector matrix file to write
+
+	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
+	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target
+	void startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount); // Begins a projector calibration
+	void captureTiePoint(void); // Records the currently visible disk against the current target
+	void finishProjectorCalibration(void); // Solves for the projection matrix and writes it
+	void abortProjectorCalibration(void); // Cancels a calibration in progress
+
+	bool sendEvent(const char* event); // Sends a one-word event to the control panel; returns whether it was delivered
 	void showPanelCallback(Misc::CallbackData* cbData); // Asks the control panel to raise itself
 	void showCalibrationCallback(Misc::CallbackData* cbData); // Asks the control panel to open the calibration dialog
 	

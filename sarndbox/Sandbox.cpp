@@ -26,12 +26,17 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <string>
 #include <sstream>
+#include <fstream>
+#include <Math/Matrix.h>
 #include <vector>
 #include <stdexcept>
 #include <iostream>
@@ -39,6 +44,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Misc/SelfDestructPointer.h>
 #include <Misc/FixedArray.h>
 #include <Misc/FunctionCalls.h>
+#include <Misc/FileTests.h>
 #include <Misc/MessageLogger.h>
 #include <Misc/FileNameExtensions.h>
 #include <Misc/StandardValueCoders.h>
@@ -223,8 +229,16 @@ void Sandbox::RenderSettings::loadProjectorTransform(const char* projectorTransf
 		}
 	catch(const std::runtime_error& err)
 		{
-		/* Print an error message and disable calibrated projections: */
-		std::cerr<<"Unable to load projector transformation from file "<<fullProjectorTransformName<<" due to exception "<<err.what()<<std::endl;
+		/* Not having a projector calibration yet is the normal state of a new
+		   sandbox, not a fault: the application simply falls back to the default
+		   projection. Say so plainly rather than printing an exception, which
+		   reads like something broke. */
+		if(!Misc::doesPathExist(fullProjectorTransformName.c_str()))
+			std::cout<<"No projector calibration yet; using the default projection. "
+			         <<"Run the projector calibration from the control panel to create "
+			         <<fullProjectorTransformName<<"."<<std::endl;
+		else
+			std::cerr<<"Unable to load projector transformation from file "<<fullProjectorTransformName<<" due to exception "<<err.what()<<std::endl;
 		projectorTransformValid=false;
 		}
 	}
@@ -252,6 +266,11 @@ Methods of class Sandbox:
 
 void Sandbox::rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
 	{
+	/* Feed the calibration target extractor, which needs raw depth rather than
+	   the filtered surface: */
+	if(diskExtractor!=0)
+		diskExtractor->submitFrame(frameBuffer);
+
 	/* Pass the received frame to the frame filter and the hand extractor: */
 	if(frameFilter!=0&&!pauseUpdates)
 		frameFilter->receiveRawFrame(frameBuffer);
@@ -375,23 +394,521 @@ void Sandbox::sendStatus(void)
 		}
 	}
 
-void Sandbox::sendEvent(const char* event)
+bool Sandbox::unprojectPixel(unsigned int x,unsigned int y,Point& result) const
+	{
+	const unsigned int* size=depthImageRenderer->getDepthImageSize();
+	if(x>=size[0]||y>=size[1]||lastFilteredFrame.getData<GLfloat>()==0)
+		return false;
+
+	const GLfloat depth=lastFilteredFrame.getData<GLfloat>()[y*size[0]+x];
+
+	/* The frame filter emits this for pixels it could not stabilise: */
+	if(depth==0.0f)
+		return false;
+
+	/* Same unprojection the surface vertex shader does, at the pixel centre: */
+	PTransform::HVector v(Scalar(x)+Scalar(0.5),Scalar(y)+Scalar(0.5),Scalar(depth),Scalar(1));
+	v=depthImageRenderer->getDepthProjection().transform(v);
+	if(v[3]==Scalar(0))
+		return false;
+
+	result=Point(v[0]/v[3],v[1]/v[3],v[2]/v[3]);
+	return true;
+	}
+
+void Sandbox::grabDepthImage(const char* fileName)
+	{
+	const unsigned int* size=depthImageRenderer->getDepthImageSize();
+	const GLfloat* dPtr=lastFilteredFrame.getData<GLfloat>();
+	if(dPtr==0)
+		{
+		sendEvent("depthImageFailed noFrame");
+		return;
+		}
+
+	/* Scale to the range actually present rather than a fixed one, so the sand
+	   fills the greyscale and the user can see what they are selecting: */
+	GLfloat lo=0.0f,hi=0.0f;
+	bool first=true;
+	for(unsigned int i=0;i<size[0]*size[1];++i)
+		if(dPtr[i]!=0.0f)
+			{
+			if(first)
+				{
+				lo=hi=dPtr[i];
+				first=false;
+				}
+			else
+				{
+				if(dPtr[i]<lo) lo=dPtr[i];
+				if(dPtr[i]>hi) hi=dPtr[i];
+				}
+			}
+	if(first||hi<=lo)
+		{
+		sendEvent("depthImageFailed noRange");
+		return;
+		}
+
+	/* Plain binary PGM: no image library needed on either side, and Qt reads it. */
+	FILE* f=fopen(fileName,"wb");
+	if(f==0)
+		{
+		sendEvent("depthImageFailed writeError");
+		return;
+		}
+	fprintf(f,"P5\n%u %u\n255\n",size[0],size[1]);
+	for(unsigned int i=0;i<size[0]*size[1];++i)
+		{
+		int v=dPtr[i]==0.0f?0:int((dPtr[i]-lo)*254.0f/(hi-lo))+1;
+		fputc(v<0?0:(v>255?255:v),f);
+		}
+	fclose(f);
+
+	std::ostringstream done;
+	done<<"depthImage "<<size[0]<<" "<<size[1];
+	sendEvent(done.str().c_str());
+	}
+
+void Sandbox::fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1)
+	{
+	/* Fitting to a region the user selected is the whole point: a fit to the
+	   entire depth image cannot tell the sand from the rest of the room, and
+	   lands on whatever surface happens to dominate the view. */
+	if(x1<x0) std::swap(x0,x1);
+	if(y1<y0) std::swap(y0,y1);
+
+	Geometry::PCACalculator<3> pca;
+	unsigned int numPoints=0;
+	Point p;
+	for(unsigned int y=y0;y<=y1;++y)
+		for(unsigned int x=x0;x<=x1;++x)
+			if(unprojectPixel(x,y,p))
+				{
+				pca.accumulatePoint(Geometry::PCACalculator<3>::Point(p[0],p[1],p[2]));
+				++numPoints;
+				}
+
+	if(numPoints<100)
+		{
+		sendEvent("planeFailed tooFewPoints");
+		return;
+		}
+
+	pca.calcCovariance();
+	double evs[3];
+	if(pca.calcEigenvalues(evs)<3)
+		{
+		sendEvent("planeFailed degenerate");
+		return;
+		}
+
+	Geometry::PCACalculator<3>::Point centroid=pca.calcCentroid();
+	Geometry::PCACalculator<3>::Vector normal=pca.calcEigenvector(evs[2]);
+	normal.normalize();
+
+	/* Point the normal back towards the camera at the origin, matching the sign
+	   convention RawKinectViewer prints: */
+	if(normal[2]<0.0)
+		normal=-normal;
+
+	pendingPlane=Plane(Plane::Vector(normal[0],normal[1],normal[2]),
+	                   Plane::Point(centroid[0],centroid[1],centroid[2]));
+	pendingPlane.normalize();
+	pendingPlaneValid=true;
+
+	/* Report it in the same form RawKinectViewer does, so the two can be compared: */
+	std::ostringstream result;
+	result<<"planeFitted "<<pendingPlane.getNormal()[0]<<" "<<pendingPlane.getNormal()[1]<<" "
+	      <<pendingPlane.getNormal()[2]<<" "<<pendingPlane.getOffset()<<" "<<numPoints;
+	sendEvent(result.str().c_str());
+	std::cout<<"Camera-space plane equation: x * ("<<pendingPlane.getNormal()[0]<<", "
+	         <<pendingPlane.getNormal()[1]<<", "<<pendingPlane.getNormal()[2]<<") = "
+	         <<pendingPlane.getOffset()<<std::endl;
+	}
+
+void Sandbox::extractPoint(unsigned int x,unsigned int y)
+	{
+	Point p;
+	if(!unprojectPixel(x,y,p))
+		{
+		sendEvent("pointFailed noDepth");
+		return;
+		}
+
+	if(numPendingCorners<4)
+		pendingCorners[numPendingCorners++]=p;
+
+	std::ostringstream result;
+	result<<"pointExtracted "<<numPendingCorners<<" "<<p[0]<<" "<<p[1]<<" "<<p[2];
+	sendEvent(result.str().c_str());
+	std::cout<<"3D position: ("<<p[0]<<", "<<p[1]<<", "<<p[2]<<")"<<std::endl;
+	}
+
+void Sandbox::resetLayoutCapture(void)
+	{
+	pendingPlaneValid=false;
+	numPendingCorners=0;
+	sendEvent("layoutReset");
+	}
+
+void Sandbox::mirrorCalibrationFile(const std::string& fileName) const
+	{
+	/* Keep a second copy of every calibration file the sandbox writes, so the
+	   version-controlled config directory cannot drift from the one the running
+	   binary actually reads. Silent no-op when no mirror is configured. */
+	if(calibrationMirrorDir.empty())
+		return;
+
+	std::string base=fileName;
+	std::string::size_type slash=base.rfind('/');
+	if(slash!=std::string::npos)
+		base=base.substr(slash+1);
+	const std::string target=calibrationMirrorDir+"/"+base;
+
+	std::ifstream in(fileName.c_str(),std::ios::binary);
+	std::ofstream out(target.c_str(),std::ios::binary);
+	if(!in||!out)
+		{
+		std::cerr<<"Unable to mirror "<<fileName<<" to "<<target<<std::endl;
+		return;
+		}
+	out<<in.rdbuf();
+	}
+
+void Sandbox::writeSandboxLayout(void)
+	{
+	if(!pendingPlaneValid)
+		{
+		sendEvent("layoutFailed noPlane");
+		return;
+		}
+	if(numPendingCorners<4)
+		{
+		std::ostringstream failure;
+		failure<<"layoutFailed needCorners "<<numPendingCorners;
+		sendEvent(failure.str().c_str());
+		return;
+		}
+
+	/* Project the corners onto the fitted plane so the two agree exactly, which
+	   is what the layout file reader assumes. The corner order is the order they
+	   were extracted in: bottom left, bottom right, upper left, upper right. */
+	Point corners[4];
+	for(int i=0;i<4;++i)
+		corners[i]=pendingPlane.project(pendingCorners[i]);
+
+	try
+		{
+		rename(sandboxLayoutFileName.c_str(),(sandboxLayoutFileName+".bak").c_str());
+
+		std::ofstream layout(sandboxLayoutFileName.c_str());
+		layout<<Misc::ValueCoder<Plane>::encode(pendingPlane)<<std::endl;
+		for(int i=0;i<4;++i)
+			layout<<Misc::ValueCoder<Point>::encode(corners[i])<<std::endl;
+		layout.close();
+		}
+	catch(const std::runtime_error& err)
+		{
+		std::cerr<<"Unable to write sandbox layout file "<<sandboxLayoutFileName<<": "<<err.what()<<std::endl;
+		sendEvent("layoutFailed writeError");
+		return;
+		}
+
+	mirrorCalibrationFile(sandboxLayoutFileName);
+
+	/* Apply the plane at once so elevation colouring is right without a restart.
+	   The water table is sized from the layout at startup, so the simulation
+	   domain still needs one. */
+	depthImageRenderer->setBasePlane(pendingPlane);
+
+	std::ostringstream done;
+	done<<"layoutWritten "<<Geometry::dist(corners[0],corners[1])<<" "
+	    <<Geometry::dist(corners[0],corners[2]);
+	sendEvent(done.str().c_str());
+	std::cout<<"Sandbox layout written; restart to resize the water simulation domain"<<std::endl;
+	}
+
+void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
+	{
+	/* Called from the disk extractor's own thread, so the result is handed to the
+	   main thread through a triple buffer rather than touched directly. Only a
+	   single unambiguous disk counts: with two in view there is no way to know
+	   which one the user means. */
+	if(disks.size()==1)
+		{
+		lastDisk.startNewValue()=Geometry::Point<double,3>(disks.front().center[0],disks.front().center[1],disks.front().center[2]);
+		lastDisk.postNewValue();
+		}
+	}
+
+Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
+	{
+	/* Lay the targets out on a grid inset from the edges of the projected image.
+	   Targets right at the border would put the disk half off the sand, and a
+	   homography fitted only to the middle of the image extrapolates badly. */
+	const unsigned int cols=3;
+	const unsigned int rows=(numTiePoints+cols-1)/cols;
+	const unsigned int col=index%cols;
+	const unsigned int row=(index/cols)%(rows>0?rows:1);
+
+	const double insetX=double(projectorImageSize[0])*0.15;
+	const double insetY=double(projectorImageSize[1])*0.15;
+	const double spanX=double(projectorImageSize[0])-2.0*insetX;
+	const double spanY=double(projectorImageSize[1])-2.0*insetY;
+
+	return Geometry::Point<double,2>(insetX+spanX*double(col)/double(cols-1),
+	                                 insetY+spanY*(rows>1?double(row)/double(rows-1):0.5));
+	}
+
+void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
+	{
+	if(diskExtractor==0)
+		{
+		sendEvent("calibrationFailed projector noExtractor");
+		return;
+		}
+
+	projectorImageSize[0]=width;
+	projectorImageSize[1]=height;
+	numTiePoints=tiePointCount<6?6:tiePointCount;
+	tiePoints.clear();
+	tiePointIndex=0;
+	haveDisk=false;
+	calibratingProjector=true;
+
+	diskExtractor->startStreaming(Misc::createFunctionCall(this,&Sandbox::diskExtractionCallback));
+
+	std::ostringstream started;
+	started<<"calibrationStarted projector "<<numTiePoints;
+	sendEvent(started.str().c_str());
+	}
+
+void Sandbox::captureTiePoint(void)
+	{
+	if(!calibratingProjector)
+		return;
+	if(!haveDisk)
+		{
+		sendEvent("calibrationNoTarget projector");
+		return;
+		}
+
+	TiePoint tp;
+	tp.p=getTiePointTarget(tiePointIndex);
+	tp.o=lastDisk.getLockedValue();
+	tiePoints.push_back(tp);
+
+	++tiePointIndex;
+	if(tiePointIndex>=numTiePoints)
+		finishProjectorCalibration();
+	else
+		{
+		std::ostringstream progress;
+		progress<<"calibrationProgress projector "<<tiePointIndex<<" "<<numTiePoints;
+		sendEvent(progress.str().c_str());
+		}
+	}
+
+void Sandbox::abortProjectorCalibration(void)
+	{
+	if(!calibratingProjector)
+		return;
+	calibratingProjector=false;
+	diskExtractor->stopStreaming();
+	tiePoints.clear();
+	sendEvent("calibrationAborted projector");
+	}
+
+void Sandbox::finishProjectorCalibration(void)
+	{
+	calibratingProjector=false;
+	diskExtractor->stopStreaming();
+
+	/* Build the least-squares system for the 3x4 homography mapping camera space
+	   to projector image space. Each tie point contributes two equations. */
+	Math::Matrix a(12,12,0.0);
+	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
+		{
+		double eq[2][12];
+		eq[0][0]=tpIt->o[0];  eq[0][1]=tpIt->o[1];  eq[0][2]=tpIt->o[2];  eq[0][3]=1.0;
+		eq[0][4]=0.0;         eq[0][5]=0.0;         eq[0][6]=0.0;         eq[0][7]=0.0;
+		eq[0][8]=-tpIt->p[0]*tpIt->o[0];
+		eq[0][9]=-tpIt->p[0]*tpIt->o[1];
+		eq[0][10]=-tpIt->p[0]*tpIt->o[2];
+		eq[0][11]=-tpIt->p[0];
+
+		eq[1][0]=0.0;         eq[1][1]=0.0;         eq[1][2]=0.0;         eq[1][3]=0.0;
+		eq[1][4]=tpIt->o[0];  eq[1][5]=tpIt->o[1];  eq[1][6]=tpIt->o[2];  eq[1][7]=1.0;
+		eq[1][8]=-tpIt->p[1]*tpIt->o[0];
+		eq[1][9]=-tpIt->p[1]*tpIt->o[1];
+		eq[1][10]=-tpIt->p[1]*tpIt->o[2];
+		eq[1][11]=-tpIt->p[1];
+
+		for(int row=0;row<2;++row)
+			for(unsigned int i=0;i<12;++i)
+				for(unsigned int j=0;j<12;++j)
+					a(i,j)+=eq[row][i]*eq[row][j];
+		}
+
+	/* The solution is the eigenvector belonging to the smallest eigenvalue: */
+	std::pair<Math::Matrix,Math::Matrix> qe=a.jacobiIteration();
+	unsigned int minEIndex=0;
+	double minE=Math::abs(qe.second(0,0));
+	for(unsigned int i=1;i<12;++i)
+		if(minE>Math::abs(qe.second(i,0)))
+			{
+			minEIndex=i;
+			minE=Math::abs(qe.second(i,0));
+			}
+
+	Math::Matrix hom(3,4);
+	for(int i=0;i<3;++i)
+		for(int j=0;j<4;++j)
+			hom(i,j)=qe.first(i*4+j,minEIndex);
+
+	/* Scale so projected weights are a positive distance from the projector.
+	   Mixed signs mean the tie points straddle the projector's plane, which
+	   cannot happen for a real capture and indicates a bad set. */
+	double wLen=Math::sqrt(Math::sqr(hom(2,0))+Math::sqr(hom(2,1))+Math::sqr(hom(2,2)));
+	int numNegativeWeights=0;
+	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
+		{
+		double w=hom(2,3);
+		for(int j=0;j<3;++j)
+			w+=hom(2,j)*tpIt->o[j];
+		if(w<0.0)
+			++numNegativeWeights;
+		}
+	if(numNegativeWeights!=0&&numNegativeWeights!=int(tiePoints.size()))
+		{
+		sendEvent("calibrationFailed projector inconsistentWeights");
+		return;
+		}
+	if(numNegativeWeights>0)
+		wLen=-wLen;
+	for(int i=0;i<3;++i)
+		for(int j=0;j<4;++j)
+			hom(i,j)/=wLen;
+
+	/* Residual in projector pixels: the honest measure of whether the capture was
+	   any good, and worth reporting rather than silently accepting. */
+	double res=0.0;
+	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
+		{
+		Math::Matrix op(4,1);
+		for(int i=0;i<3;++i)
+			op(i)=tpIt->o[i];
+		op(3)=1.0;
+		Math::Matrix pp=hom*op;
+		for(int i=0;i<2;++i)
+			pp(i)/=pp(2);
+		res+=Math::sqr(pp(0)-tpIt->p[0])+Math::sqr(pp(1)-tpIt->p[1]);
+		}
+	res=Math::sqrt(res/double(tiePoints.size()));
+
+	/* Expand the 3x4 homography into a full 4x4 projection: */
+	Math::Matrix projection(4,4);
+	for(unsigned int i=0;i<2;++i)
+		for(unsigned int j=0;j<4;++j)
+			projection(i,j)=hom(i,j);
+	for(unsigned int j=0;j<3;++j)
+		projection(2,j)=0.0;
+	projection(2,3)=-1.0;
+	for(unsigned int j=0;j<4;++j)
+		projection(3,j)=hom(2,j);
+
+	/* Map the tie points' depth range into clip space, with a margin so surfaces
+	   somewhat outside the calibrated volume are still drawn: */
+	Math::Interval<double> zRange=Math::Interval<double>::empty;
+	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
+		{
+		Math::Matrix op(4,1);
+		for(int i=0;i<3;++i)
+			op(i)=double(tpIt->o[i]);
+		op(3)=1.0;
+		Math::Matrix pp=projection*op;
+		zRange.addValue(pp(2)/pp(3));
+		}
+	zRange=Math::Interval<double>(zRange.getMin()*2.0,zRange.getMax()*0.5);
+
+	Math::Matrix invViewport(4,4,1.0);
+	invViewport(0,0)=2.0/double(projectorImageSize[0]);
+	invViewport(0,3)=-1.0;
+	invViewport(1,1)=2.0/double(projectorImageSize[1]);
+	invViewport(1,3)=-1.0;
+	invViewport(2,2)=2.0/(zRange.getSize());
+	invViewport(2,3)=-2.0*zRange.getMin()/(zRange.getSize())-1.0;
+	projection=invViewport*projection;
+
+	/* Write the matrix in the little-endian row-major layout the renderer reads: */
+	try
+		{
+		IO::FilePtr projFile=IO::openFile(projectionMatrixFileName.c_str(),IO::File::WriteOnly);
+		projFile->setEndianness(Misc::LittleEndian);
+		for(int i=0;i<4;++i)
+			for(int j=0;j<4;++j)
+				projFile->write<double>(projection(i,j));
+		}
+	catch(const std::runtime_error& err)
+		{
+		std::cerr<<"Unable to write projector matrix "<<projectionMatrixFileName<<": "<<err.what()<<std::endl;
+		sendEvent("calibrationFailed projector writeError");
+		return;
+		}
+
+	mirrorCalibrationFile(projectionMatrixFileName);
+
+	std::ostringstream done;
+	done<<"calibrationDone projector "<<res;
+	sendEvent(done.str().c_str());
+	std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
+	}
+
+bool Sandbox::sendEvent(const char* event)
 	{
 	/* Ask the panel to do something. Harmless if no panel is listening. */
 	if(statusPipeFd<0)
-		return;
+		return false;
 
 	const std::string line=std::string(event)+"\n";
-	if(write(statusPipeFd,line.data(),line.size())<0&&errno!=EAGAIN)
+	if(write(statusPipeFd,line.data(),line.size())>=0)
+		return true;
+
+	/* The reader is gone. Drop the descriptor so the next attempt reconnects, and
+	   report failure so the caller can start a panel instead of talking to a pipe
+	   nobody is listening to: an open descriptor is not evidence of a panel. */
+	if(errno!=EAGAIN)
 		{
 		close(statusPipeFd);
 		statusPipeFd=-1;
 		}
+	return false;
 	}
 
 void Sandbox::showPanelCallback(Misc::CallbackData* cbData)
 	{
-	sendEvent("showPanel");
+	/* If the message actually reached a panel, it will raise itself: */
+	if(sendEvent("showPanel"))
+		return;
+
+	/* Otherwise start one. Without this the menu entry does nothing whenever the
+	   panel happens not to be running, which is exactly when the user reaches for
+	   it. Detached via a double fork so the sandbox never has to reap it. */
+	pid_t pid=fork();
+	if(pid==0)
+		{
+		if(fork()==0)
+			{
+			execlp(controlPanelCommand.c_str(),controlPanelCommand.c_str(),
+			       "-p",controlPipeName.c_str(),(char*)0);
+			std::cerr<<"Unable to start control panel "<<controlPanelCommand<<std::endl;
+			_exit(1);
+			}
+		_exit(0);
+		}
+	else if(pid>0)
+		waitpid(pid,0,0);
 	}
 
 void Sandbox::showCalibrationCallback(Misc::CallbackData* cbData)
@@ -437,29 +954,13 @@ GLMotif::PopupMenu* Sandbox::createMainMenu(void)
 	/* Create the main menu itself: */
 	GLMotif::Menu* mainMenu=new GLMotif::Menu("MainMenu",mainMenuPopup,false);
 	
-	/* Create a button to pause topography updates: */
-	pauseUpdatesToggle=new GLMotif::ToggleButton("PauseUpdatesToggle",mainMenu,"Pause Topography");
-	pauseUpdatesToggle->setToggle(false);
-	pauseUpdatesToggle->getValueChangedCallbacks().add(this,&Sandbox::pauseUpdatesCallback);
-	
-	if(!statusPipeName.empty())
-		{
-		/* Create a button to raise the external control panel. This is what makes
-		   the panel reachable by right-click, since right-click opens this menu: */
-		GLMotif::Button* showPanelButton=new GLMotif::Button("ShowPanelButton",mainMenu,"Show Control Panel");
-		showPanelButton->getSelectCallbacks().add(this,&Sandbox::showPanelCallback);
+	/* The only entry: raise the external control panel. Everything the old menu
+	   and the water control dialog offered now lives there, so duplicating it in
+	   GLMotif would just be two interfaces to keep in step.
+	   Inert if the sandbox was started without a control pipe. */
+	GLMotif::Button* showPanelButton=new GLMotif::Button("ShowPanelButton",mainMenu,"Open Control Panel");
+	showPanelButton->getSelectCallbacks().add(this,&Sandbox::showPanelCallback);
 
-		GLMotif::Button* showCalibrationButton=new GLMotif::Button("ShowCalibrationButton",mainMenu,"Calibration...");
-		showCalibrationButton->getSelectCallbacks().add(this,&Sandbox::showCalibrationCallback);
-		}
-
-	if(waterTable!=0)
-		{
-		/* Create a button to show the water control dialog: */
-		GLMotif::Button* showWaterControlDialogButton=new GLMotif::Button("ShowWaterControlDialogButton",mainMenu,"Show Water Simulation Control");
-		showWaterControlDialogButton->getSelectCallbacks().add(this,&Sandbox::showWaterControlDialogCallback);
-		}
-	
 	/* Finish building the main menu: */
 	mainMenu->manageChild();
 	
@@ -659,7 +1160,9 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 activeDem(0),
 	 mainMenu(0),pauseUpdatesToggle(0),waterControlDialog(0),
 	 waterSpeedSlider(0),waterMaxStepsSlider(0),frameRateTextField(0),waterAttenuationSlider(0),
-	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0)
+	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0),
+	 pendingPlaneValid(false),numPendingCorners(0),
+	 diskExtractor(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false)
 	{
 	/* Read the sandbox's default configuration parameters: */
 	std::string sandboxConfigFileName=CONFIG_CONFIGDIR;
@@ -670,7 +1173,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	unsigned int cameraIndex=cfg.retrieveValue<int>("./cameraIndex",0);
 	std::string cameraConfiguration=cfg.retrieveString("./cameraConfiguration","Camera");
 	double scale=cfg.retrieveValue<double>("./scaleFactor",100.0);
-	std::string sandboxLayoutFileName=CONFIG_CONFIGDIR;
+	sandboxLayoutFileName=CONFIG_CONFIGDIR;
 	sandboxLayoutFileName.push_back('/');
 	sandboxLayoutFileName.append(CONFIG_DEFAULTBOXLAYOUTFILENAME);
 	sandboxLayoutFileName=cfg.retrieveString("./sandboxLayoutFileName",sandboxLayoutFileName);
@@ -693,7 +1196,13 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	rainStrength=cfg.retrieveValue<GLfloat>("./rainStrength",0.25f);
 	double evaporationRate=cfg.retrieveValue<double>("./evaporationRate",0.0);
 	float demDistScale=cfg.retrieveValue<float>("./demDistScale",1.0f);
-	std::string controlPipeName=cfg.retrieveString("./controlPipeName","");
+	/* Default to a well-known pipe rather than nothing, and create it below if it
+	   does not exist. Requiring the user to mkfifo and pass -cp meant the control
+	   panel could not be opened from the sandbox's menu at all unless they
+	   remembered both, which is the whole point of having the menu entry. */
+	controlPipeName=cfg.retrieveString("./controlPipeName","/tmp/sarndbox.pipe");
+	controlPanelCommand=cfg.retrieveString("./controlPanelCommand","sandbox-control");
+	calibrationMirrorDir=cfg.retrieveString("./calibrationMirrorDir","");
 	
 	/* Process command line parameters: */
 	bool printHelp=false;
@@ -985,7 +1494,23 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	
 	/* Get the camera's intrinsic parameters: */
 	cameraIps=camera->getIntrinsicParameters();
-	
+
+	/* Create the calibration target extractor. It is idle until a projector
+	   calibration is started, and its parameters describe the recommended target:
+	   a flat disk about 12 cm across, such as a CD with a paper face. */
+	diskExtractor=new Kinect::DiskExtractor(camera->getActualFrameSize(Kinect::FrameSource::DEPTH),
+	                                        camera->getDepthCorrectionParameters(),cameraIps);
+	diskExtractor->setMaxBlobMergeDist(1);
+	diskExtractor->setMinNumPixels(250);
+	diskExtractor->setDiskRadius(6.0);
+	diskExtractor->setDiskRadiusMargin(1.10);
+	diskExtractor->setDiskFlatness(1.0);
+
+	/* The projector matrix lives beside the layout file: */
+	projectionMatrixFileName=CONFIG_CONFIGDIR;
+	projectionMatrixFileName.push_back('/');
+	projectionMatrixFileName.append(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
+
 	/* Read the sandbox layout file: */
 	Geometry::Plane<double,3> basePlane;
 	Geometry::Point<double,3> basePlaneCorners[4];
@@ -1173,6 +1698,32 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		setSunDirection(sunAzimuth,sunElevation);
 		}
 	
+	if(!controlPipeName.empty())
+		{
+		/* Create both FIFOs if they are not there yet, so neither the user nor the
+		   launch script has to. An existing FIFO is fine; anything else at that
+		   path is left alone and reported when the open fails below. */
+		statusPipeName=controlPipeName+".status";
+		mkfifo(controlPipeName.c_str(),0666);
+		mkfifo(statusPipeName.c_str(),0666);
+
+		/* Open the control pipe in non-blocking mode: */
+		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK);
+		if(controlPipeFd<0)
+			std::cerr<<"Unable to open control pipe "<<controlPipeName<<"; ignoring"<<std::endl;
+
+		/* Report state back on a second pipe alongside the first, so neither side
+		   needs a separate option for it. Opened lazily in sendStatus(), since a
+		   panel may come and go while the sandbox runs.
+		   This must be set before the menu is built: the menu entries that talk to
+		   the panel are only created when a status pipe is configured. */
+		statusPipeName=controlPipeName+".status";
+
+		/* A panel exiting between our open() and write() would otherwise raise
+		   SIGPIPE and terminate the sandbox: */
+		signal(SIGPIPE,SIG_IGN);
+		}
+
 	/* Create the GUI: */
 	mainMenu=createMainMenu();
 	Vrui::setMainMenu(mainMenu);
@@ -1186,24 +1737,9 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	if(waterTable!=0)
 		BathymetrySaverTool::initClass(waterTable,*Vrui::getToolManager());
 	addEventTool("Pause Topography",0,0);
-	
-	if(!controlPipeName.empty())
-		{
-		/* Open the control pipe in non-blocking mode: */
-		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK);
-		if(controlPipeFd<0)
-			std::cerr<<"Unable to open control pipe "<<controlPipeName<<"; ignoring"<<std::endl;
+	addEventTool("Show Control Menu",0,1);
 
-		/* Report state back on a second pipe alongside the first, so neither side
-		   needs a separate option for it. Opened lazily in sendStatus(), since a
-		   panel may come and go while the sandbox runs. */
-		statusPipeName=controlPipeName+".status";
 
-		/* A panel exiting between our open() and write() would otherwise raise
-		   SIGPIPE and terminate the sandbox: */
-		signal(SIGPIPE,SIG_IGN);
-		}
-	
 	/* Inhibit the screen saver: */
 	Vrui::inhibitScreenSaver();
 	
@@ -1302,6 +1838,9 @@ void Sandbox::frame(void)
 		{
 		/* Update the depth image renderer's depth image: */
 		depthImageRenderer->setDepthImage(filteredFrames.getLockedValue());
+
+		/* Feed the same frame into a base plane measurement if one is running: */
+		lastFilteredFrame=filteredFrames.getLockedValue();
 		}
 	
 	if(handExtractor!=0)
@@ -1494,6 +2033,51 @@ void Sandbox::frame(void)
 					else
 						std::cerr<<"Wrong number of arguments for pauseUpdates control pipe command"<<std::endl;
 					}
+				else if(isToken(tokens[0],"calibrateProjector"))
+					{
+					if(tokens.size()>=2&&isToken(tokens[1],"capture"))
+						captureTiePoint();
+					else if(tokens.size()>=2&&isToken(tokens[1],"abort"))
+						abortProjectorCalibration();
+					else if(tokens.size()>=4&&isToken(tokens[1],"start"))
+						{
+						unsigned int w=(unsigned int)(atoi(tokens[2].c_str()));
+						unsigned int h=(unsigned int)(atoi(tokens[3].c_str()));
+						unsigned int n=tokens.size()>=5?(unsigned int)(atoi(tokens[4].c_str())):12U;
+						if(w>0&&h>0)
+							startProjectorCalibration(w,h,n);
+						else
+							std::cerr<<"Invalid projector size for calibrateProjector control pipe command"<<std::endl;
+						}
+					else
+						std::cerr<<"Usage: calibrateProjector start <width> <height> [points] | capture | abort"<<std::endl;
+					}
+				else if(isToken(tokens[0],"grabDepth"))
+					{
+					if(tokens.size()==2)
+						grabDepthImage(tokens[1].c_str());
+					else
+						std::cerr<<"Usage: grabDepth <file>"<<std::endl;
+					}
+				else if(isToken(tokens[0],"fitPlane"))
+					{
+					if(tokens.size()==5)
+						fitPlaneToRegion((unsigned int)(atoi(tokens[1].c_str())),(unsigned int)(atoi(tokens[2].c_str())),
+						                 (unsigned int)(atoi(tokens[3].c_str())),(unsigned int)(atoi(tokens[4].c_str())));
+					else
+						std::cerr<<"Usage: fitPlane <x0> <y0> <x1> <y1>"<<std::endl;
+					}
+				else if(isToken(tokens[0],"extractPoint"))
+					{
+					if(tokens.size()==3)
+						extractPoint((unsigned int)(atoi(tokens[1].c_str())),(unsigned int)(atoi(tokens[2].c_str())));
+					else
+						std::cerr<<"Usage: extractPoint <x> <y>"<<std::endl;
+					}
+				else if(isToken(tokens[0],"writeLayout"))
+					writeSandboxLayout();
+				else if(isToken(tokens[0],"resetLayout"))
+					resetLayoutCapture();
 				else if(isToken(tokens[0],"reliefStrength"))
 					{
 					if(tokens.size()==2)
@@ -1590,6 +2174,10 @@ void Sandbox::frame(void)
 			}
 		}
 	
+	/* Pick up the newest extracted calibration target, if any: */
+	if(calibratingProjector&&lastDisk.lockNewValue())
+		haveDisk=true;
+
 	/* Push state to the control panel a couple of times a second. Sending it per
 	   frame would be 60 writes a second for values a human is reading. */
 	if(!statusPipeName.empty()&&Vrui::getApplicationTime()>=nextStatusTime)
@@ -1662,7 +2250,20 @@ void Sandbox::display(GLContextData& contextData) const
 			}
 		#else
 		if(totalTimeStep>1.0e-8f)
-			std::cout<<"Ran out of time by "<<totalTimeStep<<std::endl;
+			{
+			/* The simulation could not consume the frame's worth of time within
+			   waterMaxSteps, so the water is running slow. Printing this every
+			   frame buries everything else in the log at 30 lines a second, so
+			   report it at most once every few seconds and say what to do. */
+			static double nextSlowReport=0.0;
+			if(Vrui::getApplicationTime()>=nextSlowReport)
+				{
+				nextSlowReport=Vrui::getApplicationTime()+5.0;
+				std::cout<<"Water simulation is behind by "<<totalTimeStep
+				         <<" s per frame; raise waterMaxSteps (currently "<<waterMaxSteps
+				         <<") or lower waterTableSize in SARndbox.cfg"<<std::endl;
+				}
+			}
 		#endif
 		
 		/* Check if the grid request is active and wants water level data: */
@@ -1894,6 +2495,52 @@ void Sandbox::display(GLContextData& contextData) const
 		glPopMatrix();
 		glMatrixMode(GL_MODELVIEW);
 		}
+
+	/* Draw the projector calibration target over everything else. It is drawn in
+	   raw window pixels rather than in the scene, because its whole purpose is to
+	   mark an exact position in the projected image: */
+	if(calibratingProjector)
+		{
+		const int* vp=ds.viewport;
+
+		glPushAttrib(GL_ENABLE_BIT|GL_LINE_BIT|GL_CURRENT_BIT);
+		glDisable(GL_LIGHTING);
+		glDisable(GL_DEPTH_TEST);
+		glMatrixMode(GL_PROJECTION);
+		glPushMatrix();
+		glLoadIdentity();
+		glOrtho(0.0,double(vp[2]),0.0,double(vp[3]),-1.0,1.0);
+		glMatrixMode(GL_MODELVIEW);
+		glPushMatrix();
+		glLoadIdentity();
+
+		/* The target is defined in projector image pixels; scale into the viewport
+		   in case the window is not exactly the calibrated size: */
+		Geometry::Point<double,2> t=getTiePointTarget(tiePointIndex);
+		double tx=t[0]*double(vp[2])/double(projectorImageSize[0]);
+		double ty=double(vp[3])-t[1]*double(vp[3])/double(projectorImageSize[1]);
+
+		/* Green once a disk is visible, so the user knows the capture will take: */
+		if(haveDisk)
+			glColor3f(0.0f,1.0f,0.0f);
+		else
+			glColor3f(1.0f,1.0f,1.0f);
+
+		const double arm=40.0;
+		glLineWidth(3.0f);
+		glBegin(GL_LINES);
+		glVertex2d(tx-arm,ty);
+		glVertex2d(tx+arm,ty);
+		glVertex2d(tx,ty-arm);
+		glVertex2d(tx,ty+arm);
+		glEnd();
+
+		glPopMatrix();
+		glMatrixMode(GL_PROJECTION);
+		glPopMatrix();
+		glMatrixMode(GL_MODELVIEW);
+		glPopAttrib();
+		}
 	}
 
 void Sandbox::resetNavigation(void)
@@ -1918,10 +2565,21 @@ void Sandbox::eventCallback(Vrui::Application::EventID eventId,Vrui::InputDevice
 			case 0:
 				/* Invert the current pause setting: */
 				pauseUpdates=!pauseUpdates;
-				
-				/* Update the main menu toggle: */
-				pauseUpdatesToggle->setToggle(pauseUpdates);
-				
+
+				/* The toggle only exists if a GLMotif menu was built, which it no
+				   longer is; guard rather than assume: */
+				if(pauseUpdatesToggle!=0)
+					pauseUpdatesToggle->setToggle(pauseUpdates);
+
+				break;
+
+			case 1:
+				/* Right click: ask the control panel to pop up its menu at the
+				   pointer. Drawing the menu in Qt rather than GLMotif means it is a
+				   real desktop menu, and it keeps the projected image clean. */
+				if(!sendEvent("showMenu"))
+					showPanelCallback(0);
+
 				break;
 			}
 		}
