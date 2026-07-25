@@ -182,7 +182,7 @@ Item {
                 Heading { text: "Camera calibration" }
 
                 Step {
-                    label: "1. Depth camera intrinsics"
+                    label: "Depth camera intrinsics"
                     detail: calibration.intrinsicsSerial ? "serial " + calibration.intrinsicsSerial : ""
                     done: calibration.intrinsicsDone
                     onTriggered: calibration.runKinectUtil()
@@ -192,15 +192,7 @@ Item {
                           "one camera; it does not transfer to another Kinect."
                 }
 
-                Step {
-                    label: "2. Base plane and sand extents"
-                    detail: calibration.planeValid
-                            ? "n · x = " + calibration.planeOffset.toFixed(3)
-                            : "not measured"
-                    done: calibration.boxLayoutDone
-                    action: "Grab"
-                    onTriggered: pipe.send("grabDepth /tmp/sarndbox-depth.pgm")
-                }
+                Heading { text: "Base plane and sand extents" }
 
                 DepthPicker { touchTarget: dialog.touchTarget }
 
@@ -282,7 +274,7 @@ Item {
                 Heading { text: "Projector calibration" }
 
                 Step {
-                    label: "3. Projector alignment"
+                    label: "Projector alignment"
                     detail: dialog.projectorState !== ""
                             ? dialog.projectorState
                             : (calibration.projectorDone
