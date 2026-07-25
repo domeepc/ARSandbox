@@ -525,30 +525,55 @@ void Sandbox::fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,u
 	pendingPlane.normalize();
 	pendingPlaneValid=true;
 
-	/* The selected region already outlines the sand, so take its corners as the
-	   extents rather than making the user click four more times. They are in the
-	   order the layout file wants -- bottom left, bottom right, upper left, upper
-	   right -- where "bottom" is the low depth row, which is the bottom of the
-	   image as the panel shows it. Clicking still overrides them. */
-	numPendingCorners=0;
-	const unsigned int cx[4]={x0,x1,x0,x1};
-	const unsigned int cy[4]={y0,y0,y1,y1};
-	for(int i=0;i<4;++i)
-		{
-		Point c;
-		if(unprojectPixel(cx[i],cy[i],c))
-			pendingCorners[numPendingCorners++]=c;
-		}
-
 	/* Report it in the same form RawKinectViewer does, so the two can be compared: */
 	std::ostringstream result;
 	result<<"planeFitted "<<pendingPlane.getNormal()[0]<<" "<<pendingPlane.getNormal()[1]<<" "
-	      <<pendingPlane.getNormal()[2]<<" "<<pendingPlane.getOffset()<<" "<<numPoints
-	      <<" "<<numPendingCorners;
+	      <<pendingPlane.getNormal()[2]<<" "<<pendingPlane.getOffset()<<" "<<numPoints;
 	sendEvent(result.str().c_str());
 	std::cout<<"Camera-space plane equation: x * ("<<pendingPlane.getNormal()[0]<<", "
 	         <<pendingPlane.getNormal()[1]<<", "<<pendingPlane.getNormal()[2]<<") = "
 	         <<pendingPlane.getOffset()<<std::endl;
+	}
+
+void Sandbox::setExtentsFromRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1)
+	{
+	/* The plane and the extents are measured in two passes: the plane off a flat
+	   plate laid on the sand, which gives a clean reference the loose sand
+	   surface cannot, and the extents off the bare sand once the plate is out of
+	   the way. So this takes corners only and leaves the fitted plane alone. */
+	if(!pendingPlaneValid)
+		{
+		sendEvent("extentsFailed noPlane");
+		return;
+		}
+
+	if(x1<x0) std::swap(x0,x1);
+	if(y1<y0) std::swap(y0,y1);
+
+	/* Order is the one the layout file wants: bottom left, bottom right, upper
+	   left, upper right, where bottom is the low depth row -- the bottom of the
+	   image as the panel draws it. */
+	const unsigned int cx[4]={x0,x1,x0,x1};
+	const unsigned int cy[4]={y0,y0,y1,y1};
+
+	Point corners[4];
+	for(int i=0;i<4;++i)
+		if(!unprojectPixel(cx[i],cy[i],corners[i]))
+			{
+			/* A corner over a hole in the depth image would be silently wrong, so
+			   refuse rather than measure the wrong part of the box. */
+			sendEvent("extentsFailed noDepthAtCorner");
+			return;
+			}
+
+	numPendingCorners=0;
+	for(int i=0;i<4;++i)
+		pendingCorners[numPendingCorners++]=corners[i];
+
+	std::ostringstream result;
+	result<<"extentsSet "<<Geometry::dist(pendingPlane.project(corners[0]),pendingPlane.project(corners[1]))
+	      <<" "<<Geometry::dist(pendingPlane.project(corners[0]),pendingPlane.project(corners[2]));
+	sendEvent(result.str().c_str());
 	}
 
 void Sandbox::extractPoint(unsigned int x,unsigned int y)
@@ -2093,6 +2118,14 @@ void Sandbox::frame(void)
 						                 (unsigned int)(atoi(tokens[3].c_str())),(unsigned int)(atoi(tokens[4].c_str())));
 					else
 						std::cerr<<"Usage: fitPlane <x0> <y0> <x1> <y1>"<<std::endl;
+					}
+				else if(isToken(tokens[0],"setExtents"))
+					{
+					if(tokens.size()==5)
+						setExtentsFromRegion((unsigned int)(atoi(tokens[1].c_str())),(unsigned int)(atoi(tokens[2].c_str())),
+						                     (unsigned int)(atoi(tokens[3].c_str())),(unsigned int)(atoi(tokens[4].c_str())));
+					else
+						std::cerr<<"Usage: setExtents <x0> <y0> <x1> <y1>"<<std::endl;
 					}
 				else if(isToken(tokens[0],"extractPoint"))
 					{

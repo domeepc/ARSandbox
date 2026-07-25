@@ -261,6 +261,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool unprojectPixel(unsigned int x,unsigned int y,Point& result) const; // Turns a depth image pixel into a 3D camera space point
 	void grabDepthImage(const char* fileName); // Writes the current filtered depth frame as a greyscale image for the panel to show
 	void fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Fits the base plane to a rectangle of the depth image
+	void setExtentsFromRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Takes the four sand corners from a region, keeping the fitted plane
 	void extractPoint(unsigned int x,unsigned int y); // Reports the 3D position of one depth image pixel and keeps it as a corner
 	void writeSandboxLayout(void); // Writes the fitted plane and extracted corners to the layout file
 	void resetLayoutCapture(void); // Discards a partly captured layout
