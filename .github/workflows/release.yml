@@ -47,7 +47,7 @@ jobs:
 
   package-deb:
     name: Package (.deb)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get install -y build-essential g++ cmake ninja-build git wget \
             libudev-dev libdbus-1-dev libusb-1.0-0-dev zlib1g-dev libssl-dev \
             libpng-dev libjpeg-dev libtiff-dev libasound2-dev libspeex-dev libopenal-dev \
-            libv4l-dev libdc1394-dev libtheora-dev libbluetooth-dev libfreetype6-dev \
+            libv4l-dev libdc1394-dev libtheora-dev libbluetooth-dev libfreetype-dev \
             libxi-dev libxrandr-dev mesa-common-dev libgl1-mesa-dev libglu1-mesa-dev \
             fonts-freefont-ttf \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
@@ -77,9 +77,9 @@ jobs:
             --license GPL-2.0 --url https://github.com/${{ github.repository }} \
             --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package" \
             --depends libudev1 --depends libdbus-1-3 --depends libusb-1.0-0 \
-            --depends zlib1g --depends libssl3 --depends libpng16-16 \
-            --depends libjpeg-turbo8 --depends libtiff5 --depends libasound2 \
-            --depends libspeex1 --depends libopenal1 --depends libv4l-0 \
+            --depends zlib1g --depends libssl3t64 --depends libpng16-16t64 \
+            --depends libjpeg-turbo8 --depends libtiff6 --depends libasound2 \
+            --depends libspeex1 --depends libopenal1 --depends libv4l-0t64 \
             --depends libdc1394-25 --depends libtheora0 --depends libbluetooth3 \
             --depends libfreetype6 --depends libxi6 --depends libxrandr2 \
             --depends libgl1 --depends libglu1-mesa --depends fonts-freefont-ttf \
