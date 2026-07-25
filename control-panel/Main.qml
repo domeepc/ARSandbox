@@ -12,6 +12,13 @@ ApplicationWindow {
     height: 900
     title: "SARndbox Control Panel"
 
+    // White text throughout. Set on the window so it propagates to every page
+    // rather than being repeated on each label.
+    palette.windowText: "#ffffff"
+    palette.text: "#ffffff"
+    palette.buttonText: "#ffffff"
+    palette.brightText: "#ffffff"
+
     // Sized for a touchscreen at the exhibit: nothing relies on hover, and every
     // interactive element is at least this tall.
     readonly property int touchTarget: 48
@@ -35,9 +42,19 @@ ApplicationWindow {
             else if (key === "pauseUpdates") root.sandboxPaused = (value === "on")
         }
 
+        // Values pushed by the sandbox go stale the moment it stops, so drop them
+        // rather than leaving a frame rate on screen for a program that has exited.
+        function onConnectedChanged() {
+            if (!pipe.connected) root.frameRate = 0
+        }
+
         // Both come from the sandbox's right-click menu.
         function onShowRequested() { root.reveal(0) }
-        function onShowCalibrationRequested() { root.reveal(1) }
+        function onShowCalibrationRequested() { root.reveal(2) }
+
+        // Right click in the sandbox just brings the panel up; the tabs are the
+        // menu.
+        function onShowMenuRequested() { root.reveal(0) }
     }
 
     header: ColumnLayout {
@@ -82,6 +99,7 @@ ApplicationWindow {
             id: tabs
             Layout.fillWidth: true
             TabButton { text: "Topography"; implicitHeight: root.touchTarget }
+            TabButton { text: "Water"; implicitHeight: root.touchTarget }
             TabButton { text: "Calibration"; implicitHeight: root.touchTarget }
         }
     }
@@ -91,6 +109,7 @@ ApplicationWindow {
         currentIndex: tabs.currentIndex
 
         ControlsPage { sandboxPaused: root.sandboxPaused }
+        WaterPage {}
         CalibrationPage {}
     }
 }

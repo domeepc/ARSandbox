@@ -13,6 +13,11 @@ Item {
     readonly property int touchTarget: 48
     readonly property int gap: 14
 
+    // Azimuth and elevation travel as one command, so both sliders send together.
+    function sendSun() {
+        pipe.send("sunDirection " + azimuth.value.toFixed(0) + " " + elevation.value.toFixed(0))
+    }
+
     component Setting: ColumnLayout {
         id: setting
         property string label
@@ -30,7 +35,7 @@ Item {
             Label { text: setting.label; font.pixelSize: 16; Layout.fillWidth: true }
             Label {
                 text: slider.value.toFixed(setting.decimals)
-                font.pixelSize: 16; font.family: "monospace"; opacity: 0.75
+                font.pixelSize: 16; font.family: "monospace"; opacity: 0.9
             }
         }
 
@@ -58,7 +63,7 @@ Item {
             font.pixelSize: 13
             font.bold: true
             font.capitalization: Font.AllUppercase
-            opacity: 0.6
+            opacity: 0.85
             Layout.topMargin: page.gap
         }
     }
@@ -68,13 +73,8 @@ Item {
         contentWidth: availableWidth
 
         ColumnLayout {
-            width: parent.width
-            anchors.margins: page.gap
-            spacing: page.gap
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.margins: page.gap
+                x: page.gap
+                width: page.width - 2 * page.gap
                 spacing: page.gap
 
                 Section { title: "Topography" }
@@ -94,27 +94,6 @@ Item {
                         implicitHeight: page.touchTarget
                         onToggled: pipe.send("pauseUpdates " + (checked ? "on" : "off"))
                     }
-                }
-
-                Section { title: "Water" }
-
-                Setting {
-                    label: "Speed"
-                    command: "waterSpeed"
-                    from: 0.0; to: 4.0; value: 1.0
-                    decimals: 2
-                }
-                Setting {
-                    label: "Max steps per frame"
-                    command: "waterMaxSteps"
-                    from: 1; to: 80; value: 30
-                    decimals: 0
-                }
-                Setting {
-                    label: "Attenuation"
-                    command: "waterAttenuation"
-                    from: 0.0; to: 0.05; value: 0.0
-                    decimals: 4
                 }
 
                 Section { title: "Contour lines" }
@@ -156,7 +135,7 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     font.pixelSize: 13
-                    opacity: 0.6
+                    opacity: 0.85
                     text: "Only visible when the sandbox is started with -uhs."
                 }
 
@@ -178,7 +157,7 @@ Item {
                         Label { text: "Sun azimuth"; font.pixelSize: 16; Layout.fillWidth: true }
                         Label {
                             text: azimuth.value.toFixed(0) + "°"
-                            font.pixelSize: 16; font.family: "monospace"; opacity: 0.75
+                            font.pixelSize: 16; font.family: "monospace"; opacity: 0.9
                         }
                     }
                     Slider {
@@ -195,7 +174,7 @@ Item {
                         Label { text: "Sun elevation"; font.pixelSize: 16; Layout.fillWidth: true }
                         Label {
                             text: elevation.value.toFixed(0) + "°"
-                            font.pixelSize: 16; font.family: "monospace"; opacity: 0.75
+                            font.pixelSize: 16; font.family: "monospace"; opacity: 0.9
                         }
                     }
                     Slider {
@@ -208,8 +187,6 @@ Item {
                     }
                 }
 
-                Item { Layout.fillHeight: true }
-            }
         }
     }
 }
