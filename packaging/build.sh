@@ -52,6 +52,29 @@ grep -q "#include <cstddef>" Vrui/Vislets/FrameRateViewer.h || \
 make -j"$JOBS" INSTALLDIR="$PREFIX"
 make INSTALLDIR="$STAGEPREFIX" install
 
+# Vrui's generated Configuration.Vrui bakes a single INSTALLDIR for two
+# different jobs: where to find headers/libs to build against Vrui, and
+# what RPATH to embed in binaries that link against it. Those need to
+# differ here - Kinect/SARndbox/the control panel must find headers and
+# libraries under the staging tree right now (nothing was installed to the
+# real $PREFIX on this machine), but linked binaries still need an RPATH of
+# $PREFIX, since that's where the .deb/.rpm will actually place them.
+# Rewrite every non-RPATH path in the staged config to point into the
+# staging tree instead.
+CONFIG_VRUI="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make/Configuration.Vrui"
+sed -i "/RPATH/! s|$PREFIX|$STAGEPREFIX|g" "$CONFIG_VRUI"
+
+# Kinect and SARndbox link against libraries (Vrui's own, and Kinect's,
+# which install alongside them) that themselves depend on other Vrui
+# libraries - e.g. libKinect.so needs libVideo.so. `-L` only resolves the
+# `-l` flags ld is given directly; it does not help ld chase those
+# transitive shared-library dependencies, and the RPATH baked into
+# Configuration.Vrui deliberately still points at the real (not yet
+# populated) $PREFIX. Point ld at the staged lib dir via LD_LIBRARY_PATH so
+# it can resolve them during this build; this has no effect on the RPATH
+# embedded in the binaries themselves.
+export LD_LIBRARY_PATH="$(sed -n 's/^VRUI_LIBDIR := //p' "$CONFIG_VRUI")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # --------------------------------------------------------------- Kinect package
 
 say "Building the Vrui Kinect package into $PREFIX"
