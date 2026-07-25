@@ -1,0 +1,144 @@
+name: Release
+
+# Builds the control panel on Linux and macOS and attaches both to a release,
+# plus a source archive of the sandbox.
+#
+# The sandbox itself is deliberately not built here. It needs Vrui, which is a
+# large out-of-tree toolkit that takes many minutes to compile and pulls in V4L2
+# and udev, and it cannot be meaningfully tested without a Kinect attached. A CI
+# binary of it would be slow to produce and impossible to verify, so the release
+# ships the sources and install.sh builds them on the target machine.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  panel-linux:
+    name: Control panel (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build \
+            qt6-base-dev qt6-declarative-dev \
+            qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts qml6-module-qtquick-window
+
+      - name: Build
+        run: |
+          cmake -S control-panel -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Stage
+        run: |
+          mkdir -p stage/sandbox-control-linux-x86_64
+          cp build/sandbox-control stage/sandbox-control-linux-x86_64/
+          cp README.md stage/sandbox-control-linux-x86_64/
+          tar -C stage -czf sandbox-control-linux-x86_64.tar.gz sandbox-control-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-control-linux-x86_64
+          path: sandbox-control-linux-x86_64.tar.gz
+
+  panel-macos:
+    name: Control panel (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.*'
+          modules: 'qtdeclarative'
+
+      - name: Build
+        run: |
+          cmake -S control-panel -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      # The panel is portable Qt over POSIX FIFOs, so it builds and runs on
+      # macOS. It is only useful there against a sandbox running on the same
+      # machine or a shared filesystem path, which in practice means Linux —
+      # see the macOS section of the README.
+      - name: Stage
+        run: |
+          mkdir -p stage
+          if [ -d build/sandbox-control.app ]; then
+            cp -R build/sandbox-control.app stage/
+          else
+            mkdir -p stage/sandbox-control-macos && cp build/sandbox-control stage/sandbox-control-macos/
+          fi
+          cd stage && zip -r ../sandbox-control-macos-arm64.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-control-macos-arm64
+          path: sandbox-control-macos-arm64.zip
+
+  source:
+    name: Source archive
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the installer parses
+        run: bash -n install.sh
+
+      - name: Archive
+        run: |
+          tar --exclude-vcs \
+              --exclude='sarndbox/o' --exclude='sarndbox/bin' --exclude='sarndbox/d' \
+              --exclude='control-panel/build' \
+              -czf arsandbox-source.tar.gz \
+              sarndbox control-panel config docs scripts install.sh README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arsandbox-source
+          path: arsandbox-source.tar.gz
+
+  release:
+    name: Publish
+    needs: [panel-linux, panel-macos, source]
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            Download `arsandbox-source.tar.gz`, unpack it and run:
+
+            ```bash
+            ./install.sh
+            ```
+
+            That installs the build dependencies, builds and installs Vrui and
+            its Kinect package if they are not already present, then builds the
+            sandbox and the control panel. Vrui is built from the author's
+            release rather than vendored here.
+
+            The prebuilt `sandbox-control` binaries are the Qt control panel
+            only. The sandbox itself is built from source by `install.sh`,
+            because it needs Vrui and a Kinect and cannot be verified in CI.
