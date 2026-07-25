@@ -42,11 +42,17 @@ ColumnLayout {
                                    "), d = " + parseFloat(f[3]).toFixed(3) +
                                    "  (" + f[4] + " points)"
                 picker.mode = "corners"
+                // The region's own corners are taken as the extents, so the
+                // layout can be written straight away.
+                picker.cornerCount = f.length > 5 ? parseInt(f[5]) : 0
+                picker.cornerText = picker.cornerCount >= 4
+                    ? "corners taken from the selection — click any to re-pick"
+                    : ""
             } else if (key === "pointExtracted") {
                 picker.cornerCount = parseInt(f[0])
                 picker.cornerText = picker.cornerCount < 4
                     ? "next: " + picker.cornerNames[picker.cornerCount]
-                    : "four corners extracted"
+                    : "four corners set"
             } else if (key === "layoutWritten") {
                 picker.cornerText = "written — " + parseFloat(f[0]).toFixed(1) +
                                     " x " + parseFloat(f[1]).toFixed(1) + " cm"
@@ -87,7 +93,7 @@ ColumnLayout {
         opacity: 0.85
         text: picker.mode === "region"
             ? "Drag a rectangle over the flat sand, avoiding the box walls."
-            : "Click the four corners of the sand in order: bottom left, bottom right, upper left, upper right."
+            : "The selection's corners are used as the sand extents. To set them by hand instead, click the four corners in order: bottom left, bottom right, upper left, upper right."
     }
 
     // The depth image is shown at its own aspect ratio; clicks are mapped back

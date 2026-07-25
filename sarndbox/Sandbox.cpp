@@ -525,10 +525,26 @@ void Sandbox::fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,u
 	pendingPlane.normalize();
 	pendingPlaneValid=true;
 
+	/* The selected region already outlines the sand, so take its corners as the
+	   extents rather than making the user click four more times. They are in the
+	   order the layout file wants -- bottom left, bottom right, upper left, upper
+	   right -- where "bottom" is the low depth row, which is the bottom of the
+	   image as the panel shows it. Clicking still overrides them. */
+	numPendingCorners=0;
+	const unsigned int cx[4]={x0,x1,x0,x1};
+	const unsigned int cy[4]={y0,y0,y1,y1};
+	for(int i=0;i<4;++i)
+		{
+		Point c;
+		if(unprojectPixel(cx[i],cy[i],c))
+			pendingCorners[numPendingCorners++]=c;
+		}
+
 	/* Report it in the same form RawKinectViewer does, so the two can be compared: */
 	std::ostringstream result;
 	result<<"planeFitted "<<pendingPlane.getNormal()[0]<<" "<<pendingPlane.getNormal()[1]<<" "
-	      <<pendingPlane.getNormal()[2]<<" "<<pendingPlane.getOffset()<<" "<<numPoints;
+	      <<pendingPlane.getNormal()[2]<<" "<<pendingPlane.getOffset()<<" "<<numPoints
+	      <<" "<<numPendingCorners;
 	sendEvent(result.str().c_str());
 	std::cout<<"Camera-space plane equation: x * ("<<pendingPlane.getNormal()[0]<<", "
 	         <<pendingPlane.getNormal()[1]<<", "<<pendingPlane.getNormal()[2]<<") = "
@@ -544,8 +560,11 @@ void Sandbox::extractPoint(unsigned int x,unsigned int y)
 		return;
 		}
 
-	if(numPendingCorners<4)
-		pendingCorners[numPendingCorners++]=p;
+	/* Wrap rather than ignore, so clicking after the region filled the corners in
+	   replaces them one by one instead of doing nothing. */
+	if(numPendingCorners>=4)
+		numPendingCorners=0;
+	pendingCorners[numPendingCorners++]=p;
 
 	std::ostringstream result;
 	result<<"pointExtracted "<<numPendingCorners<<" "<<p[0]<<" "<<p[1]<<" "<<p[2];
