@@ -63,7 +63,7 @@ jobs:
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window \
             qml6-module-qtqml-workerscript qml6-module-qtquick-templates \
-            qml6-module-qtcore \
+            qml6-module-qt-labs-settings \
             xvfb \
             ruby ruby-dev rubygems
           sudo gem install --no-document fpm
@@ -134,7 +134,7 @@ jobs:
             --depends libqt6quick6 --depends libqt6qml6 --depends qml6-module-qtquick \
             --depends qml6-module-qtquick-controls --depends qml6-module-qtquick-layouts \
             --depends qml6-module-qtquick-window --depends qml6-module-qtqml-workerscript \
-            --depends qml6-module-qtquick-templates --depends qml6-module-qtcore \
+            --depends qml6-module-qtquick-templates --depends qml6-module-qt-labs-settings \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
 

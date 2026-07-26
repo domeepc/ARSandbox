@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtCore
+import Qt.labs.settings
 
 // Water simulation controls.
 Item {
