@@ -130,8 +130,7 @@ Methods of class Sandbox::DataItem:
 
 Sandbox::DataItem::DataItem(void)
 	:waterTableTime(0.0),
-	 shadowFramebufferObject(0),shadowDepthTextureObject(0),
-	 colorTextureObject(0),colorTextureVersion(0)
+	 shadowFramebufferObject(0),shadowDepthTextureObject(0)
 	{
 	/* Check if all required extensions are supported: */
 	bool supported=GLEXTFramebufferObject::isSupported();
@@ -163,7 +162,6 @@ Sandbox::DataItem::~DataItem(void)
 	/* Delete all shaders, buffers, and texture objects: */
 	glDeleteFramebuffersEXT(1,&shadowFramebufferObject);
 	glDeleteTextures(1,&shadowDepthTextureObject);
-	glDeleteTextures(1,&colorTextureObject);
 	}
 
 /****************************************
@@ -275,7 +273,10 @@ void Sandbox::rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
 	   single Kinect v1 frame is noisy enough to fragment a flat disk into
 	   multiple blobs, and the disk has to be held still to be captured anyway. */
 	if(diskExtractor!=0&&calibratingProjector)
+		{
 		diskExtractor->submitFrame(averageDepthFrames(frameBuffer));
+		calibrationFacade->setDepthFrame(frameBuffer);
+		}
 
 	/* Pass the received frame to the frame filter and the hand extractor. Not
 	   while calibrating: the frames are background-removed then, and feeding
@@ -318,30 +319,6 @@ Kinect::FrameBuffer Sandbox::averageDepthFrames(const Kinect::FrameBuffer& newFr
 		*rPtr=count>0?DepthPixel((sum+count/2)/count):Kinect::FrameSource::invalidDepth;
 		}
 	return result;
-	}
-
-void Sandbox::colorFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
-	{
-	/* Only ever displayed during calibration, but color streaming is only
-	   requested to begin with while calibrating (see setCameraStreaming), so
-	   there is nothing to gate here: */
-	colorFrames.postNewValue(frameBuffer);
-	Vrui::requestUpdate();
-	}
-
-void Sandbox::setCameraStreaming(bool enableColor)
-	{
-	if(colorStreamingEnabled==enableColor)
-		return;
-
-	/* Kinect v1 cannot toggle the color stream independently of depth without
-	   restarting the whole camera, which briefly interrupts the live depth
-	   feed. That is only acceptable because the topography view is not shown
-	   while calibrating: */
-	camera->stopStreaming();
-	camera->startStreaming(enableColor?Misc::createFunctionCall(this,&Sandbox::colorFrameDispatcher):0,
-	                       Misc::createFunctionCall(this,&Sandbox::rawDepthFrameDispatcher));
-	colorStreamingEnabled=enableColor;
 	}
 
 void Sandbox::receiveFilteredFrame(const Kinect::FrameBuffer& frameBuffer)
@@ -748,6 +725,15 @@ void Sandbox::writeSandboxLayout(void)
 	std::cout<<"Sandbox layout written; restart to resize the water simulation domain"<<std::endl;
 	}
 
+#if !KINECT_CONFIG_USE_SHADERPROJECTOR
+
+void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
+	{
+	Vrui::requestUpdate();
+	}
+
+#endif
+
 void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
 	{
 	/* Called from the disk extractor's own thread, so the result is handed to the
@@ -766,6 +752,10 @@ void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disk
 		lastDisk.startNewValue()=*best;
 		lastDisk.postNewValue();
 		diskEverSeenThisCalibration=true;
+
+		/* Wake the main thread: nothing else drives the display while calibrating,
+		   since the frame filter is skipped then. */
+		Vrui::requestUpdate();
 		}
 	}
 
@@ -806,9 +796,6 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	diskAveragingRingSize=0;
 	diskAveragingRingNext=0;
 	calibratingProjector=true;
-
-	/* Bring up the color stream for the live calibration camera view: */
-	setCameraStreaming(true);
 
 	/* Blank the sand out of the depth stream for the duration. The extractor
 	   separates blobs by depth steps alone, so a target held close to the sand,
@@ -871,7 +858,6 @@ void Sandbox::abortProjectorCalibration(void)
 		return;
 	calibratingProjector=false;
 	diskExtractor->stopStreaming();
-	setCameraStreaming(false);
 	restoreDepthStream();
 	tiePoints.clear();
 	sendEvent("calibrationAborted projector");
@@ -881,8 +867,27 @@ void Sandbox::finishProjectorCalibration(void)
 	{
 	calibratingProjector=false;
 	diskExtractor->stopStreaming();
-	setCameraStreaming(false);
 	restoreDepthStream();
+
+	/* A projective camera cannot be recovered from tie points that all lie in one
+	   plane: the system is rank deficient, the solution still passes through
+	   every tie point -- so the residual looks fine -- and the resulting matrix
+	   throws the rendered view off the sand entirely. Capturing all targets at
+	   the same height above the surface is the easy way to end up there, so
+	   require a real spread in height before trusting the solve. */
+	const double minHeightSpread=10.0; // In cm; roughly what a hand varies by without trying
+	Math::Interval<double> heightRange=Math::Interval<double>::empty;
+	for(std::vector<TiePoint>::iterator tpIt=tiePoints.begin();tpIt!=tiePoints.end();++tpIt)
+		heightRange.addValue(tpIt->o[2]); // Camera z: the sensor looks down at the sand, so this is height
+	if(heightRange.getSize()<minHeightSpread)
+		{
+		std::ostringstream flat;
+		flat<<"calibrationFailed projector flatCapture "<<heightRange.getSize();
+		sendEvent(flat.str().c_str());
+		std::cerr<<"Projector calibration rejected: targets spanned only "<<heightRange.getSize()
+		         <<"cm in height; hold the disk at clearly different heights"<<std::endl;
+		return;
+		}
 
 	/* Build the least-squares system for the 3x4 homography mapping camera space
 	   to projector image space. Each tie point contributes two equations. */
@@ -1003,6 +1008,10 @@ void Sandbox::finishProjectorCalibration(void)
 	/* Write the matrix in the little-endian row-major layout the renderer reads: */
 	try
 		{
+		/* Keep the previous matrix, as the layout writer does: a calibration that
+		   turns out worse than the one it replaced is otherwise unrecoverable. */
+		rename(projectionMatrixFileName.c_str(),(projectionMatrixFileName+".bak").c_str());
+
 		IO::FilePtr projFile=IO::openFile(projectionMatrixFileName.c_str(),IO::File::WriteOnly);
 		projFile->setEndianness(Misc::LittleEndian);
 		for(int i=0;i<4;++i)
@@ -1319,7 +1328,7 @@ void printUsage(void)
 Sandbox::Sandbox(int& argc,char**& argv)
 	:Vrui::Application(argc,argv),
 	 remoteServer(0),
-	 camera(0),colorStreamingEnabled(false),colorFrameVersion(0),pixelDepthCorrection(0),
+	 camera(0),pixelDepthCorrection(0),
 	 frameFilter(0),pauseUpdates(false),
 	 depthImageRenderer(0),
 	 waterTable(0),
@@ -1330,7 +1339,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 waterSpeedSlider(0),waterMaxStepsSlider(0),frameRateTextField(0),waterAttenuationSlider(0),
 	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0),
 	 pendingPlaneValid(false),numPendingCorners(0),
-	 diskExtractor(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),
+	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
 	{
@@ -1641,8 +1650,6 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		}
 	for(int i=0;i<2;++i)
 		frameSize[i]=camera->getActualFrameSize(Kinect::FrameSource::DEPTH)[i];
-	for(int i=0;i<2;++i)
-		colorFrameSize[i]=camera->getActualFrameSize(Kinect::FrameSource::COLOR)[i];
 
 	/* Get the camera's per-pixel depth correction parameters and evaluate it on the depth frame's pixel grid: */
 	Kinect::FrameSource::DepthCorrection* depthCorrection=camera->getDepthCorrectionParameters();
@@ -1679,11 +1686,31 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	   hand-held tilt already failed the shape test; a 6cm-radius disk tilted
 	   ~25 degrees has about 2.5cm of through-depth spread and ~10% foreshortening
 	   on one in-plane axis, so both are loosened to tolerate that plus noise. */
+	/* The shape test is not tilt-invariant: DiskExtractor runs its PCA in depth
+	   image space, where x and y are pixels and z is raw disparity, so a tilted
+	   target's fitted axes come out skewed and it fails the radius test even
+	   though it is a perfectly good disk. Nothing to be done about that short of
+	   patching the extractor, so the gates are loose instead -- affordable now
+	   that the calibration blanks the sand out and the only foreground left is
+	   the target and the hand holding it. The rim overlay shows what was
+	   accepted, so a bad take is visible rather than silent. */
 	diskExtractor->setMaxBlobMergeDist(4);
 	diskExtractor->setMinNumPixels(300);
 	diskExtractor->setDiskRadius(6.0);
-	diskExtractor->setDiskRadiusMargin(1.20);
-	diskExtractor->setDiskFlatness(2.5);
+	diskExtractor->setDiskRadiusMargin(1.5); // Accepts a 4-9cm fitted radius
+	diskExtractor->setDiskFlatness(4.0);
+
+	/* Render the raw 3D video as the backdrop of the calibration view, the way
+	   the standalone CalibrateProjector does. Untextured and unlit: the sandbox
+	   does not stream color, and a flat colour is more legible projected on sand
+	   than a shaded surface. */
+	calibrationFacade=new Kinect::ProjectorType(*camera);
+	calibrationFacade->setTriangleDepthRange(4); // Same step the extractor merges blobs across
+	calibrationFacade->setExtrinsicParameters(Kinect::FrameSource::ExtrinsicParameters::identity);
+	#if KINECT_CONFIG_USE_PROJECTOR2
+	calibrationFacade->setMapTexture(false);
+	calibrationFacade->setIlluminate(false);
+	#endif
 
 	/* The projector matrix lives beside the layout file: */
 	projectionMatrixFileName=CONFIG_CONFIGDIR;
@@ -1692,7 +1719,6 @@ Sandbox::Sandbox(int& argc,char**& argv)
 
 	/* Read the sandbox layout file: */
 	Geometry::Plane<double,3> basePlane;
-	Geometry::Point<double,3> basePlaneCorners[4];
 	{
 	IO::ValueSource layoutSource(IO::openFile(sandboxLayoutFileName.c_str()));
 	layoutSource.skipWs();
@@ -1759,12 +1785,12 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		handExtractor=new HandExtractor(frameSize,pixelDepthCorrection,cameraIps.depthProjection);
 		}
 	
-	/* Start streaming depth frames only. Color is left off until a projector
-	   calibration actually needs the live camera view (see setCameraStreaming);
-	   colorStreamingEnabled is already false from construction, so this direct
-	   call -- rather than going through setCameraStreaming, whose no-op guard
-	   is only meaningful for an actual state change -- is what actually starts
-	   the camera the first time. */
+	/* Start streaming depth frames. The color stream is never requested: nothing
+	   displays it. The facade builds meshes on its own thread, but only from the
+	   frames submitted to it, which is only while calibrating. */
+	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
+	calibrationFacade->startStreaming(Misc::createFunctionCall(this,&Sandbox::facadeMeshCallback));
+	#endif
 	camera->startStreaming(0,Misc::createFunctionCall(this,&Sandbox::rawDepthFrameDispatcher));
 	
 	/* Create the depth image renderer: */
@@ -1942,6 +1968,7 @@ Sandbox::~Sandbox(void)
 	delete waterTable;
 	delete depthImageRenderer;
 	delete handExtractor;
+	delete calibrationFacade;
 	delete addWaterFunction;
 	delete[] pixelDepthCorrection;
 	delete remoteServer;
@@ -2028,11 +2055,6 @@ void Sandbox::frame(void)
 		}
 
 	/* Check if a new color frame has arrived for the calibration camera view: */
-	if(colorFrames.lockNewValue())
-		{
-		currentColorFrame=colorFrames.getLockedValue();
-		++colorFrameVersion;
-		}
 
 	if(handExtractor!=0)
 		{
@@ -2387,10 +2409,15 @@ void Sandbox::frame(void)
 			}
 		}
 	
+	/* The facade renders whatever mesh is locked in, and only this call locks a
+	   newer one: */
+	if(calibratingProjector)
+		calibrationFacade->updateFrames();
+
 	/* Pick up the newest extracted calibration target, if any. The extractor only
 	   reports when it finds a disk, never when one leaves, so presence is judged
 	   by how recently it last reported: a flag set on arrival would latch on and
-	   the crosshair would stay green after the target was taken away. */
+	   the marker would stay put after the target was taken away. */
 	if(calibratingProjector&&lastDisk.lockNewValue())
 		lastDiskTime=Vrui::getApplicationTime();
 	haveDisk=calibratingProjector&&Vrui::getApplicationTime()-lastDiskTime<0.3;
@@ -2413,119 +2440,86 @@ void Sandbox::frame(void)
 		Vrui::scheduleUpdate(Vrui::getApplicationTime()+1.0/30.0);
 	}
 
-void Sandbox::bindColorTexture(GLContextData& contextData) const
+void Sandbox::drawCalibrationView(GLContextData& contextData,const int viewport[4]) const
 	{
-	/* Get the data item: */
-	DataItem* dataItem=contextData.retrieveDataItem<DataItem>(this);
-
-	/* Bind the color image texture: */
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->colorTextureObject);
-
-	/* Check if the texture is outdated: */
-	if(dataItem->colorTextureVersion!=colorFrameVersion&&currentColorFrame.isValid())
-		{
-		/* Upload the new color texture: */
-		glTexSubImage2D(GL_TEXTURE_RECTANGLE_ARB,0,0,0,colorFrameSize[0],colorFrameSize[1],GL_RGB,GL_UNSIGNED_BYTE,currentColorFrame.getData<GLubyte>());
-
-		/* Mark the color texture as current: */
-		dataItem->colorTextureVersion=colorFrameVersion;
-		}
-	}
-
-void Sandbox::drawCalibrationCameraView(GLContextData& contextData,const int viewport[4]) const
-	{
-	/* The quad below maps texture t straight to window y, and the image comes
-	   out the right way up that way, so the marker uses the color projection's
-	   t unflipped as well -- flipping only one of the two mirrors the marker
-	   away from the disk it is supposed to sit on. */
-	static const bool flipT=false;
-
-	glPushAttrib(GL_ENABLE_BIT|GL_TEXTURE_BIT|GL_LINE_BIT|GL_CURRENT_BIT|GL_DEPTH_BUFFER_BIT);
+	/* The same view the standalone CalibrateProjector projects: the sandbox area
+	   seen straight down, with the extracted disk drawn where the extractor puts
+	   it. Unlike the topography this is drawn in camera space, so it does not
+	   depend on the calibration being solved yet. */
+	glPushAttrib(GL_ENABLE_BIT|GL_LINE_BIT|GL_CURRENT_BIT|GL_DEPTH_BUFFER_BIT);
 	glDisable(GL_LIGHTING);
 	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_CULL_FACE); // The disk faces the camera, so its winding depends on which way rotateFromTo turned it
+	glLineWidth(2.0f);
+
+	/* Fit the sandbox area to the window, keeping its aspect ratio: */
+	double bMin[2],bMax[2];
+	for(int i=0;i<2;++i)
+		{
+		bMin[i]=Math::Constants<double>::max;
+		bMax[i]=Math::Constants<double>::min;
+		}
+	for(int c=0;c<4;++c)
+		{
+		Point bp=boxTransform.transform(basePlaneCorners[c]);
+		for(int i=0;i<2;++i)
+			{
+			bMin[i]=Math::min(bMin[i],bp[i]);
+			bMax[i]=Math::max(bMax[i],bp[i]);
+			}
+		}
+	double bw=bMax[0]-bMin[0];
+	double bh=bMax[1]-bMin[1];
 	glMatrixMode(GL_PROJECTION);
 	glPushMatrix();
 	glLoadIdentity();
-	glOrtho(0.0,double(viewport[2]),0.0,double(viewport[3]),-1.0,1.0);
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
-
-	/* Draw the live color image stretched to fill the window -- exact aspect
-	   fidelity does not matter here, this is a live diagnostic view, not a
-	   measurement: */
-	glEnable(GL_TEXTURE_RECTANGLE_ARB);
-	glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE);
-	glColor3f(1.0f,1.0f,1.0f);
-	bindColorTexture(contextData);
-	glBegin(GL_QUADS);
-	glTexCoord2f(0.0f,0.0f);
-	glVertex2d(0.0,0.0);
-	glTexCoord2f(GLfloat(colorFrameSize[0]),0.0f);
-	glVertex2d(double(viewport[2]),0.0);
-	glTexCoord2f(GLfloat(colorFrameSize[0]),GLfloat(colorFrameSize[1]));
-	glVertex2d(double(viewport[2]),double(viewport[3]));
-	glTexCoord2f(0.0f,GLfloat(colorFrameSize[1]));
-	glVertex2d(0.0,double(viewport[3]));
-	glEnd();
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
-	glDisable(GL_TEXTURE_RECTANGLE_ARB);
-
-	/* colorProjection maps *depth image* space to color texture coordinates --
-	   Kinect's own Projector2 shader feeds it raw depth pixels, whatever the
-	   comment on IntrinsicParameters says -- while the disk extractor reports in
-	   3D camera space, so the inverse depth projection has to come first: */
-	Kinect::FrameSource::IntrinsicParameters::PTransform cameraToColor=cameraIps.colorProjection*Geometry::invert(cameraIps.depthProjection);
-
-	/* Mark the disk's position: at a fixed neutral spot until a disk has ever
-	   been seen this calibration, then at its last known reprojected position: */
-	const Kinect::DiskExtractor::Disk& disk=lastDisk.getLockedValue();
-	double mx,my;
-	if(diskEverSeenThisCalibration)
+	if(bw*double(viewport[3])>=double(viewport[2])*bh) // Sandbox area is wider than the window
 		{
-		Geometry::Point<double,3> st=cameraToColor.transform(disk.center);
-		mx=st[0]*double(viewport[2]);
-		my=(flipT?1.0-st[1]:st[1])*double(viewport[3]);
+		double filler=Math::div2((bw*double(viewport[3]))/double(viewport[2])-bh);
+		glOrtho(bMin[0],bMax[0],bMin[1]-filler,bMax[1]+filler,-200.0,200.0);
 		}
 	else
 		{
-		mx=double(viewport[2])*0.5;
-		my=double(viewport[3])*0.5;
+		double filler=Math::div2((bh*double(viewport[2]))/double(viewport[3])-bw);
+		glOrtho(bMin[0]-filler,bMax[0]+filler,bMin[1],bMax[1],-200.0,200.0);
 		}
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadMatrix(boxTransform);
 
-	/* Outline the blob the extractor is currently calling a disk, so a target
-	   that is not being detected -- or clutter that is -- can be told apart from
-	   a stale marker. Only drawn while a disk is actually in view, which is what
-	   the crosshair colour used to say. */
+	/* The live 3D video, as a solid yellow facade: */
+	glColor3f(1.0f,1.0f,0.0f);
+	calibrationFacade->glRenderAction(contextData);
+	glDisable(GL_DEPTH_TEST); // The projector turns depth testing back on
+
+	/* The sandbox outline, in the corner order the layout file stores: */
+	glColor3f(1.0f,1.0f,0.0f);
+	glBegin(GL_LINE_LOOP);
+	glVertex(basePlaneCorners[0]);
+	glVertex(basePlaneCorners[1]);
+	glVertex(basePlaneCorners[3]);
+	glVertex(basePlaneCorners[2]);
+	glEnd();
+
+	/* The blob the extractor is currently calling a disk, at its extracted
+	   position, orientation and size -- so a wrong detection is visible as a
+	   circle in the wrong place or of the wrong size: */
 	if(haveDisk)
 		{
-		Kinect::DiskExtractor::Vector x=Geometry::normal(disk.normal);
-		Kinect::DiskExtractor::Vector y=Geometry::cross(disk.normal,x);
-		x.normalize();
-		y.normalize();
-
-		glColor3f(0.0f,1.0f,0.0f);
-		glLineWidth(2.0f);
-		glBegin(GL_LINE_LOOP);
+		const Kinect::DiskExtractor::Disk& disk=lastDisk.getLockedValue();
+		glPushMatrix();
+		glTranslate(disk.center-Kinect::DiskExtractor::Point::origin);
+		glRotate(Vrui::Rotation::rotateFromTo(Vrui::Vector(0,0,1),Vrui::Vector(disk.normal)));
+		glColor3f(0.0f,0.0f,1.0f); // Blue: the one colour that cannot be confused with the yellow facade
+		glBegin(GL_POLYGON);
 		for(int i=0;i<32;++i)
 			{
 			double angle=2.0*Math::Constants<double>::pi*double(i)/32.0;
-			Kinect::DiskExtractor::Point rim=disk.center+x*(Math::cos(angle)*disk.radius)+y*(Math::sin(angle)*disk.radius);
-			Geometry::Point<double,3> st=cameraToColor.transform(rim);
-			glVertex2d(st[0]*double(viewport[2]),(flipT?1.0-st[1]:st[1])*double(viewport[3]));
+			glVertex3d(Math::cos(angle)*disk.radius,Math::sin(angle)*disk.radius,0.0);
 			}
 		glEnd();
+		glPopMatrix();
 		}
-
-	glColor3f(1.0f,1.0f,1.0f);
-	const double arm=20.0;
-	glLineWidth(3.0f);
-	glBegin(GL_LINES);
-	glVertex2d(mx-arm,my);
-	glVertex2d(mx+arm,my);
-	glVertex2d(mx,my-arm);
-	glVertex2d(mx,my+arm);
-	glEnd();
 
 	glPopMatrix();
 	glMatrixMode(GL_PROJECTION);
@@ -2634,10 +2628,9 @@ void Sandbox::display(GLContextData& contextData) const
 	
 	if(calibratingProjector)
 		{
-		/* Replace the topography view with a live camera feed and disk marker
-		   while calibrating the projector, so the operator can see whether the
-		   target is currently being detected: */
-		drawCalibrationCameraView(contextData,ds.viewport);
+		/* Replace the topography with the calibration view while calibrating, so
+		   the operator can see whether the target is currently being detected: */
+		drawCalibrationView(contextData,ds.viewport);
 		}
 	else
 		{
@@ -2863,16 +2856,18 @@ void Sandbox::display(GLContextData& contextData) const
 		glLoadIdentity();
 
 		/* The target is defined in projector image pixels; scale into the viewport
-		   in case the window is not exactly the calibrated size: */
+		   in case the window is not exactly the calibrated size. y runs bottom-up,
+		   matching both the ortho projection above and the clip-space mapping the
+		   solved matrix is scaled by -- drawing the cross flipped while recording
+		   the tie point unflipped fits a mirror-image projector, which still
+		   passes through every tie point and inverts parallax with height. */
 		Geometry::Point<double,2> t=getTiePointTarget(tiePointIndex);
 		double tx=t[0]*double(vp[2])/double(projectorImageSize[0]);
-		double ty=double(vp[3])-t[1]*double(vp[3])/double(projectorImageSize[1]);
+		double ty=t[1]*double(vp[3])/double(projectorImageSize[1]);
 
-		/* Green once a disk is visible, so the user knows the capture will take: */
-		if(haveDisk)
-			glColor3f(0.0f,1.0f,0.0f);
-		else
-			glColor3f(1.0f,1.0f,1.0f);
+		/* Always white: this cross is only the reference point to place the target
+		   on. Whether the target is detected is said by the green disk. */
+		glColor3f(1.0f,1.0f,1.0f);
 
 		const double arm=40.0;
 		glLineWidth(3.0f);
@@ -2972,15 +2967,6 @@ void Sandbox::initContext(GLContextData& contextData) const
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT,currentFrameBuffer);
 	}
 
-	/* Generate the color camera texture shown during projector calibration: */
-	glGenTextures(1,&dataItem->colorTextureObject);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,dataItem->colorTextureObject);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_S,GL_CLAMP);
-	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB,GL_TEXTURE_WRAP_T,GL_CLAMP);
-	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB,0,GL_RGB8,colorFrameSize[0],colorFrameSize[1],0,GL_RGB,GL_UNSIGNED_BYTE,0);
-	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	}
 
 VRUI_APPLICATION_RUN(Sandbox)

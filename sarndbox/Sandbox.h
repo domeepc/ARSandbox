@@ -45,6 +45,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <Kinect/FrameBuffer.h>
 #include <Kinect/FrameSource.h>
 #include <Kinect/DiskExtractor.h>
+#include <Kinect/Config.h>
+#include <Kinect/ProjectorType.h>
+#include <Kinect/ProjectorHeader.h>
 
 #include "Types.h"
 
@@ -92,8 +95,6 @@ class Sandbox:public Vrui::Application,public GLObject
 		GLsizei shadowBufferSize[2]; // Size of the shadow rendering frame buffer
 		GLuint shadowFramebufferObject; // Frame buffer object to render shadow maps
 		GLuint shadowDepthTextureObject; // Depth texture for the shadow rendering frame buffer
-		GLuint colorTextureObject; // Texture holding the live color camera image shown during projector calibration
-		unsigned int colorTextureVersion; // Version number of the uploaded color texture
 
 		/* Constructors and destructors: */
 		DataItem(void);
@@ -206,21 +207,13 @@ class Sandbox:public Vrui::Application,public GLObject
 	RemoteServer* remoteServer; // A server to stream bathymetry and water level grids to remote clients
 	Kinect::FrameSource* camera; // The Kinect camera device
 	unsigned int frameSize[2]; // Width and height of the camera's depth frames
-	bool colorStreamingEnabled; // Flag whether the camera is currently also streaming color frames
-	unsigned int colorFrameSize[2]; // Width and height of the camera's color frames
-	Threads::TripleBuffer<Kinect::FrameBuffer> colorFrames; // Triple buffer for incoming color frames, used only during projector calibration
-	Kinect::FrameBuffer currentColorFrame; // Most recent color frame locked in by frame()
-	unsigned int colorFrameVersion; // Bumped each time currentColorFrame changes
-	void setCameraStreaming(bool enableColor); // Restarts the camera, with or without the color stream
-	void colorFrameDispatcher(const Kinect::FrameBuffer& frameBuffer); // Callback receiving color frames from the Kinect camera
-	void bindColorTexture(GLContextData& contextData) const; // Binds the up-to-date color texture to the current texture unit
-	void drawCalibrationCameraView(GLContextData& contextData,const int viewport[4]) const; // Draws the live color image and disk marker in place of the topography during calibration
 	PixelDepthCorrection* pixelDepthCorrection; // Buffer of per-pixel depth correction coefficients
 	Kinect::FrameSource::IntrinsicParameters cameraIps; // Intrinsic parameters of the Kinect camera
 	FrameFilter* frameFilter; // Processing object to filter raw depth frames from the Kinect camera
 	bool pauseUpdates; // Pauses updates of the topography
 	Threads::TripleBuffer<Kinect::FrameBuffer> filteredFrames; // Triple buffer for incoming filtered depth frames
 	DepthImageRenderer* depthImageRenderer; // Object managing the current filtered depth image
+	Point basePlaneCorners[4]; // Corners of the sandbox area, as read from the layout file
 	ONTransform boxTransform; // Transformation from camera space to baseplane space (x along long sandbox axis, z up)
 	Scalar boxSize; // Radius of sphere around sandbox area
 	Box bbox; // Bounding box around all potential surfaces
@@ -290,6 +283,7 @@ class Sandbox:public Vrui::Application,public GLObject
 		};
 
 	Kinect::DiskExtractor* diskExtractor; // Finds the calibration target in the depth stream
+	Kinect::ProjectorType* calibrationFacade; // Renders the raw 3D video as the backdrop of the calibration view
 	bool calibratingProjector; // Flag whether a projector calibration is in progress
 	unsigned int projectorImageSize[2]; // Projector image size in pixels
 	unsigned int tiePointIndex; // Index of the target currently being shown
@@ -311,12 +305,16 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::FrameBuffer averageDepthFrames(const Kinect::FrameBuffer& newFrame); // Pushes newFrame into the ring and returns the pixelwise average for disk extraction
 
 	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
+	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
+	void facadeMeshCallback(const Kinect::MeshBuffer& meshBuffer); // Wakes the main thread when the facade has a new mesh
+	#endif
 	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target
 	void startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount); // Begins a projector calibration
 	void captureTiePoint(void); // Records the currently visible disk against the current target
 	void finishProjectorCalibration(void); // Solves for the projection matrix and writes it
 	void abortProjectorCalibration(void); // Cancels a calibration in progress
 	void restoreDepthStream(void); // Turns background removal back off after a calibration
+	void drawCalibrationView(GLContextData& contextData,const int viewport[4]) const; // Draws the sandbox area and the extracted disk in place of the topography during calibration
 
 	bool sendEvent(const char* event); // Sends a one-word event to the control panel; returns whether it was delivered
 	void showPanelCallback(Misc::CallbackData* cbData); // Asks the control panel to raise itself
