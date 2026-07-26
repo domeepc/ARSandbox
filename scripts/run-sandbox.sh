@@ -15,6 +15,26 @@ if [ ! -x "$SANDBOX_DIR/bin/SARndbox" ]; then
 	exit 1
 fi
 
+# Without a camera, SARndbox itself would fail a few seconds into Vrui's
+# startup with an uncaught "Terminated Sandbox due to exception:
+# Kinect::Camera::Camera: Fewer than 1 Kinect camera devices detected" - fine
+# from a terminal, invisible from a desktop shortcut. Check first and hand
+# off to the panel's own error dialog instead: KinectUtil list prints one
+# "Kinect ..." line per device and nothing at all when none are found.
+# KinectUtil lives on PATH for a from-source install (installed under
+# install.sh's own $PREFIX) but only alongside SARndbox for a packaged one.
+KINECTUTIL=$(command -v KinectUtil || true)
+[ -x "$KINECTUTIL" ] || KINECTUTIL="$SANDBOX_DIR/bin/KinectUtil"
+if [ -x "$KINECTUTIL" ] && ! "$KINECTUTIL" list 2>/dev/null | grep -q "^Kinect "; then
+	MESSAGE="No Kinect camera detected. Connect a Kinect and try again."
+	if command -v sandbox-control >/dev/null; then
+		sandbox-control --error "$MESSAGE"
+	else
+		echo "$MESSAGE"
+	fi
+	exit 1
+fi
+
 # Two FIFOs: commands in, status out. The sandbox derives the status path by
 # appending .status, so neither side needs a separate option for it.
 # A stale FIFO from a previous run is harmless, but a regular file left at

@@ -35,7 +35,48 @@ int main(int argc,char* argv[])
 		"Directory the sandbox was built in.",
 		"path",QDir::homePath()+"/src/SARndbox-2.8");
 	parser.addOption(dirOption);
+	QCommandLineOption errorOption("error",
+		"Show the given message in an error dialog and exit, instead of starting the panel normally. "
+		"Used by run-sandbox.sh to report a missing camera without a terminal to print to.",
+		"message");
+	parser.addOption(errorOption);
 	parser.process(app);
+
+	if(parser.isSet(errorOption))
+		{
+		/* Reuse QtQuick.Controls' own Dialog type instead of pulling in QtWidgets
+		   for a single message box - it is already a working, already-packaged
+		   dependency of this app. */
+		QQmlApplicationEngine engine;
+		engine.rootContext()->setContextProperty("errorMessage",parser.value(errorOption));
+		engine.loadData(R"(
+			import QtQuick
+			import QtQuick.Controls
+
+			ApplicationWindow {
+				width: 400
+				height: 150
+				visible: true
+				title: "Augmented Reality Sandbox"
+
+				Dialog {
+					anchors.centerIn: parent
+					modal: true
+					title: "Augmented Reality Sandbox"
+					standardButtons: Dialog.Ok
+					Label {
+						text: errorMessage
+						wrapMode: Text.WordWrap
+					}
+					onClosed: Qt.quit()
+					Component.onCompleted: open()
+				}
+			}
+			)");
+		if(engine.rootObjects().isEmpty())
+			return -1;
+		return app.exec();
+		}
 
 	Pipe pipe(parser.value(pipeOption));
 	Calibration calibration(parser.value(dirOption));
