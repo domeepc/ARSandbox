@@ -2054,8 +2054,6 @@ void Sandbox::frame(void)
 		lastFilteredFrame=filteredFrames.getLockedValue();
 		}
 
-	/* Check if a new color frame has arrived for the calibration camera view: */
-
 	if(handExtractor!=0)
 		{
 		/* Lock the most recent extracted hand list: */
@@ -2453,35 +2451,23 @@ void Sandbox::drawCalibrationView(GLContextData& contextData,const int viewport[
 	glLineWidth(2.0f);
 
 	/* Fit the sandbox area to the window, keeping its aspect ratio: */
-	double bMin[2],bMax[2];
-	for(int i=0;i<2;++i)
-		{
-		bMin[i]=Math::Constants<double>::max;
-		bMax[i]=Math::Constants<double>::min;
-		}
+	Box box=Box::empty;
 	for(int c=0;c<4;++c)
-		{
-		Point bp=boxTransform.transform(basePlaneCorners[c]);
-		for(int i=0;i<2;++i)
-			{
-			bMin[i]=Math::min(bMin[i],bp[i]);
-			bMax[i]=Math::max(bMax[i],bp[i]);
-			}
-		}
-	double bw=bMax[0]-bMin[0];
-	double bh=bMax[1]-bMin[1];
+		box.addPoint(boxTransform.transform(basePlaneCorners[c]));
+	double bw=box.getSize(0);
+	double bh=box.getSize(1);
 	glMatrixMode(GL_PROJECTION);
 	glPushMatrix();
 	glLoadIdentity();
 	if(bw*double(viewport[3])>=double(viewport[2])*bh) // Sandbox area is wider than the window
 		{
 		double filler=Math::div2((bw*double(viewport[3]))/double(viewport[2])-bh);
-		glOrtho(bMin[0],bMax[0],bMin[1]-filler,bMax[1]+filler,-200.0,200.0);
+		glOrtho(box.min[0],box.max[0],box.min[1]-filler,box.max[1]+filler,-200.0,200.0);
 		}
 	else
 		{
 		double filler=Math::div2((bh*double(viewport[2]))/double(viewport[3])-bw);
-		glOrtho(bMin[0]-filler,bMax[0]+filler,bMin[1],bMax[1],-200.0,200.0);
+		glOrtho(box.min[0]-filler,box.max[0]+filler,box.min[1],box.max[1],-200.0,200.0);
 		}
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
