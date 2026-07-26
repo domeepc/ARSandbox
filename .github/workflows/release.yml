@@ -62,12 +62,39 @@ jobs:
             fonts-freefont-ttf \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window \
-            qml6-module-qtqml-workerscript \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-templates \
+            xvfb \
             ruby ruby-dev rubygems
           sudo gem install --no-document fpm
 
       - name: Build and stage
         run: STAGEROOT="$PWD/stageroot" bash packaging/build.sh
+
+      - name: Smoke test the control panel
+        # Qt Quick Controls' styles (Fusion, the Linux desktop default) pull in
+        # further QML modules (Templates, WorkerScript, ...) that apt does not
+        # treat as hard dependencies of qml6-module-qtquick-controls itself,
+        # since Debian's packaging has no notion of "this QML plugin imports
+        # that other QML plugin at runtime" - only the C++ libraries it links
+        # against. Two missing modules have already reached a shipped release
+        # this way (WorkerScript, then Templates); actually launching the
+        # built binary here, in the same environment the release ships from,
+        # catches the next one before a release does instead of after.
+        run: |
+          test_mode() {
+            xvfb-run -a stageroot/opt/arsandbox/bin/sandbox-control "$@" >smoke.log 2>&1 &
+            PANEL_PID=$!
+            sleep 3
+            kill "$PANEL_PID" 2>/dev/null || true
+            wait "$PANEL_PID" 2>/dev/null || true
+            if grep -qiE "not found|unavailable|failed to load|QQmlApplicationEngine failed" smoke.log; then
+              echo "sandbox-control $* failed to start cleanly:"
+              cat smoke.log
+              exit 1
+            fi
+          }
+          test_mode --error smoke-test
+          test_mode -p /tmp/smoke.pipe
 
       - name: Package
         run: |
@@ -87,6 +114,7 @@ jobs:
             --depends libqt6quick6 --depends libqt6qml6 --depends qml6-module-qtquick \
             --depends qml6-module-qtquick-controls --depends qml6-module-qtquick-layouts \
             --depends qml6-module-qtquick-window --depends qml6-module-qtqml-workerscript \
+            --depends qml6-module-qtquick-templates \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
 
