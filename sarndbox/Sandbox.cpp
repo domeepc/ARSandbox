@@ -1352,7 +1352,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 camera(0),pixelDepthCorrection(0),
 	 frameFilter(0),pauseUpdates(false),
 	 depthImageRenderer(0),
-	 waterTable(0),
+	 waterTable(0),drainWaterRequested(false),
 	 handExtractor(0),addWaterFunction(0),addWaterFunctionRegistered(false),
 	 sun(0),sunAzimuth(315.0f),sunElevation(45.0f),
 	 activeDem(0),
@@ -2142,6 +2142,14 @@ void Sandbox::frame(void)
 					else
 						std::cerr<<"Wrong number of arguments for waterAttenuation control pipe command"<<std::endl;
 					}
+				else if(isToken(tokens[0],"drainWater"))
+					{
+					/* Setting the water level needs a GL context, which the pipe
+					   command thread does not have; defer to the next display()
+					   call, same as the grid read-back requests do. */
+					if(waterTable!=0)
+						drainWaterRequested=true;
+					}
 				else if(isToken(tokens[0],"colorMap"))
 					{
 					if(tokens.size()==2)
@@ -2543,7 +2551,19 @@ void Sandbox::display(GLContextData& contextData) const
 		
 		/* Update the water table's bathymetry grid: */
 		waterTable->updateBathymetry(contextData);
-		
+
+		/* Check if a drain was requested. Done after updateBathymetry, not before:
+		   setWaterLevel adapts the given level to the *current* terrain, so the
+		   result is exactly dry rather than a flat pool wherever the sand sits
+		   above the water table's lowest possible elevation. */
+		if(drainWaterRequested)
+			{
+			const GLsizei* wtGridSize=waterTable->getSize();
+			std::vector<GLfloat> dry(size_t(wtGridSize[0])*size_t(wtGridSize[1]),GLfloat(waterTable->getDomain().min[2]));
+			waterTable->setWaterLevel(dry.data(),contextData);
+			drainWaterRequested=false;
+			}
+
 		/* Check if the grid request is active and wants bathymetry data: */
 		if(request.isActive()&&request.bathymetryBuffer!=0)
 			{

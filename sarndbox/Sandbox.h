@@ -225,6 +225,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	const AddWaterFunction* addWaterFunction; // Render function registered with the water table
 	bool addWaterFunctionRegistered; // Flag if the water adding function is currently registered with the water table
 	mutable GridRequest gridRequest; // Structure holding pending grid read-back requests
+	mutable bool drainWaterRequested; // Flag whether the water level should be reset to dry on the next display() call; needs a GL context, so the pipe command can't apply it directly
 	std::vector<RenderSettings> renderSettings; // List of per-window rendering settings
 	Vrui::Lightsource* sun; // An external fixed light source
 	GLfloat sunAzimuth; // Azimuth of the fixed light source in degrees

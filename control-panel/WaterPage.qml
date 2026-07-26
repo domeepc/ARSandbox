@@ -113,6 +113,14 @@ Item {
                     decimals: 4
                 }
 
+                Button {
+                    Layout.fillWidth: true
+                    implicitHeight: page.touchTarget
+                    text: "Drain water"
+                    enabled: pipe.connected
+                    onClicked: pipe.send("drainWater")
+                }
+
         }
     }
 }
