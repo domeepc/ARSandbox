@@ -1,4 +1,4 @@
-![AR Sandbox](packaging/arsandbox.svg)
+<img src="packaging/arsandbox.svg" width="120" alt="AR sandbox" />
 # ARSandbox
 
 Augmented Reality Sandbox — a Kinect depth camera watches a box of sand, and a
