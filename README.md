@@ -1,3 +1,4 @@
+![AR Sandbox](packaging/arsandbox.svg)
 # ARSandbox
 
 Augmented Reality Sandbox — a Kinect depth camera watches a box of sand, and a
