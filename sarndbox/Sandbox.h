@@ -295,7 +295,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	unsigned int tiePointIndex; // Index of the target currently being shown
 	unsigned int numTiePoints; // Number of targets in the sequence
 	std::vector<TiePoint> tiePoints; // Correspondences collected so far
-	Threads::TripleBuffer<Geometry::Point<double,3> > lastDisk; // Most recently extracted disk centre
+	Threads::TripleBuffer<Kinect::DiskExtractor::Disk> lastDisk; // Most recently extracted disk
 	bool haveDisk; // Flag whether a disk is currently visible
 	bool diskEverSeenThisCalibration; // Flag whether a disk has been detected at least once since the current calibration started
 	double lastDiskTime; // Application time at which a disk was last extracted
@@ -316,6 +316,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	void captureTiePoint(void); // Records the currently visible disk against the current target
 	void finishProjectorCalibration(void); // Solves for the projection matrix and writes it
 	void abortProjectorCalibration(void); // Cancels a calibration in progress
+	void restoreDepthStream(void); // Turns background removal back off after a calibration
 
 	bool sendEvent(const char* event); // Sends a one-word event to the control panel; returns whether it was delivered
 	void showPanelCallback(Misc::CallbackData* cbData); // Asks the control panel to raise itself

@@ -6,7 +6,9 @@
 # SARndbox opens the pipe with O_RDONLY|O_NONBLOCK but does not create it, so
 # the FIFO has to exist before the sandbox starts.
 
-SANDBOX_DIR=${SANDBOX_DIR:-$HOME/src/SARndbox-2.8}
+# Defaults to the in-tree build, which is where install.sh builds and leaves it.
+# The packaged launcher overrides this with /opt/arsandbox.
+SANDBOX_DIR=${SANDBOX_DIR:-$(cd "$(dirname "$0")/../sarndbox" && pwd)}
 PIPE=${SARNDBOX_PIPE:-/tmp/sarndbox.pipe}
 
 if [ ! -x "$SANDBOX_DIR/bin/SARndbox" ]; then

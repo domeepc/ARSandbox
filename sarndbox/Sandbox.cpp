@@ -277,8 +277,12 @@ void Sandbox::rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
 	if(diskExtractor!=0&&calibratingProjector)
 		diskExtractor->submitFrame(averageDepthFrames(frameBuffer));
 
-	/* Pass the received frame to the frame filter and the hand extractor: */
-	if(frameFilter!=0&&!pauseUpdates)
+	/* Pass the received frame to the frame filter and the hand extractor. Not
+	   while calibrating: the frames are background-removed then, and feeding
+	   blanked sand into the elevation history would leave the surface to
+	   re-converge afterwards. The topography is not on screen during a
+	   calibration anyway. */
+	if(frameFilter!=0&&!pauseUpdates&&!calibratingProjector)
 		frameFilter->receiveRawFrame(frameBuffer);
 	if(handExtractor!=0)
 		handExtractor->receiveRawFrame(frameBuffer);
@@ -759,7 +763,7 @@ void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disk
 			if(dIt->numPixels>best->numPixels)
 				best=&*dIt;
 
-		lastDisk.startNewValue()=Geometry::Point<double,3>(best->center[0],best->center[1],best->center[2]);
+		lastDisk.startNewValue()=*best;
 		lastDisk.postNewValue();
 		diskEverSeenThisCalibration=true;
 		}
@@ -806,6 +810,20 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	/* Bring up the color stream for the live calibration camera view: */
 	setCameraStreaming(true);
 
+	/* Blank the sand out of the depth stream for the duration. The extractor
+	   separates blobs by depth steps alone, so a target held close to the sand,
+	   or anywhere over a mound, merges into the surface and fails the shape test
+	   -- which is why detection works in some spots and not others. Removal
+	   makes the held target the only foreground, as the standalone
+	   CalibrateProjector does. Costs the first ~2s to capture the sand, and
+	   means the target has to be held above the surface, not laid on it. */
+	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
+	if(directCamera!=0)
+		{
+		directCamera->captureBackground(60,true);
+		directCamera->setRemoveBackground(true);
+		}
+
 	diskExtractor->startStreaming(Misc::createFunctionCall(this,&Sandbox::diskExtractionCallback));
 
 	std::ostringstream started;
@@ -825,7 +843,7 @@ void Sandbox::captureTiePoint(void)
 
 	TiePoint tp;
 	tp.p=getTiePointTarget(tiePointIndex);
-	tp.o=lastDisk.getLockedValue();
+	tp.o=lastDisk.getLockedValue().center;
 	tiePoints.push_back(tp);
 
 	++tiePointIndex;
@@ -839,6 +857,14 @@ void Sandbox::captureTiePoint(void)
 		}
 	}
 
+void Sandbox::restoreDepthStream(void)
+	{
+	/* Undo the background removal that startProjectorCalibration turned on: */
+	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
+	if(directCamera!=0)
+		directCamera->setRemoveBackground(false);
+	}
+
 void Sandbox::abortProjectorCalibration(void)
 	{
 	if(!calibratingProjector)
@@ -846,6 +872,7 @@ void Sandbox::abortProjectorCalibration(void)
 	calibratingProjector=false;
 	diskExtractor->stopStreaming();
 	setCameraStreaming(false);
+	restoreDepthStream();
 	tiePoints.clear();
 	sendEvent("calibrationAborted projector");
 	}
@@ -855,6 +882,7 @@ void Sandbox::finishProjectorCalibration(void)
 	calibratingProjector=false;
 	diskExtractor->stopStreaming();
 	setCameraStreaming(false);
+	restoreDepthStream();
 
 	/* Build the least-squares system for the 3x4 homography mapping camera space
 	   to projector image space. Each tie point contributes two equations. */
@@ -2406,11 +2434,11 @@ void Sandbox::bindColorTexture(GLContextData& contextData) const
 
 void Sandbox::drawCalibrationCameraView(GLContextData& contextData,const int viewport[4]) const
 	{
-	/* Whether the color projection's t coordinate needs flipping to match
-	   OpenGL's bottom-up texture convention is not conclusively established
-	   from the calibration tool that produced it; flip here in one place if
-	   the marker turns out vertically mirrored from the real disk position: */
-	static const bool flipT=true;
+	/* The quad below maps texture t straight to window y, and the image comes
+	   out the right way up that way, so the marker uses the color projection's
+	   t unflipped as well -- flipping only one of the two mirrors the marker
+	   away from the disk it is supposed to sit on. */
+	static const bool flipT=false;
 
 	glPushAttrib(GL_ENABLE_BIT|GL_TEXTURE_BIT|GL_LINE_BIT|GL_CURRENT_BIT|GL_DEPTH_BUFFER_BIT);
 	glDisable(GL_LIGHTING);
@@ -2443,13 +2471,19 @@ void Sandbox::drawCalibrationCameraView(GLContextData& contextData,const int vie
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB,0);
 	glDisable(GL_TEXTURE_RECTANGLE_ARB);
 
+	/* colorProjection maps *depth image* space to color texture coordinates --
+	   Kinect's own Projector2 shader feeds it raw depth pixels, whatever the
+	   comment on IntrinsicParameters says -- while the disk extractor reports in
+	   3D camera space, so the inverse depth projection has to come first: */
+	Kinect::FrameSource::IntrinsicParameters::PTransform cameraToColor=cameraIps.colorProjection*Geometry::invert(cameraIps.depthProjection);
+
 	/* Mark the disk's position: at a fixed neutral spot until a disk has ever
-	   been seen this calibration, then at its last known reprojected position,
-	   green while currently tracked: */
+	   been seen this calibration, then at its last known reprojected position: */
+	const Kinect::DiskExtractor::Disk& disk=lastDisk.getLockedValue();
 	double mx,my;
 	if(diskEverSeenThisCalibration)
 		{
-		Geometry::Point<double,3> st=cameraIps.colorProjection.transform(lastDisk.getLockedValue());
+		Geometry::Point<double,3> st=cameraToColor.transform(disk.center);
 		mx=st[0]*double(viewport[2]);
 		my=(flipT?1.0-st[1]:st[1])*double(viewport[3]);
 		}
@@ -2459,11 +2493,31 @@ void Sandbox::drawCalibrationCameraView(GLContextData& contextData,const int vie
 		my=double(viewport[3])*0.5;
 		}
 
+	/* Outline the blob the extractor is currently calling a disk, so a target
+	   that is not being detected -- or clutter that is -- can be told apart from
+	   a stale marker. Only drawn while a disk is actually in view, which is what
+	   the crosshair colour used to say. */
 	if(haveDisk)
-		glColor3f(0.0f,1.0f,0.0f);
-	else
-		glColor3f(1.0f,1.0f,1.0f);
+		{
+		Kinect::DiskExtractor::Vector x=Geometry::normal(disk.normal);
+		Kinect::DiskExtractor::Vector y=Geometry::cross(disk.normal,x);
+		x.normalize();
+		y.normalize();
 
+		glColor3f(0.0f,1.0f,0.0f);
+		glLineWidth(2.0f);
+		glBegin(GL_LINE_LOOP);
+		for(int i=0;i<32;++i)
+			{
+			double angle=2.0*Math::Constants<double>::pi*double(i)/32.0;
+			Kinect::DiskExtractor::Point rim=disk.center+x*(Math::cos(angle)*disk.radius)+y*(Math::sin(angle)*disk.radius);
+			Geometry::Point<double,3> st=cameraToColor.transform(rim);
+			glVertex2d(st[0]*double(viewport[2]),(flipT?1.0-st[1]:st[1])*double(viewport[3]));
+			}
+		glEnd();
+		}
+
+	glColor3f(1.0f,1.0f,1.0f);
 	const double arm=20.0;
 	glLineWidth(3.0f);
 	glBegin(GL_LINES);

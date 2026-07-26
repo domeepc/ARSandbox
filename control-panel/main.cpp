@@ -31,9 +31,12 @@ int main(int argc,char* argv[])
 		"Path of the SARndbox control FIFO (must match the sandbox's -cp option).",
 		"path","/tmp/sarndbox.pipe");
 	parser.addOption(pipeOption);
+	/* The panel reads the sandbox's own etc/ directory, so it has to look where
+	   the sandbox actually is: $SANDBOX_DIR if the launcher set it, otherwise
+	   the tree this binary was installed into (bin/sandbox-control -> ..). */
 	QCommandLineOption dirOption(QStringList()<<"d"<<"sandbox-dir",
 		"Directory the sandbox was built in.",
-		"path",QDir::homePath()+"/src/SARndbox-2.8");
+		"path",qEnvironmentVariable("SANDBOX_DIR",QDir::cleanPath(app.applicationDirPath()+"/..")));
 	parser.addOption(dirOption);
 	QCommandLineOption errorOption("error",
 		"Show the given message in an error dialog and exit, instead of starting the panel normally. "
