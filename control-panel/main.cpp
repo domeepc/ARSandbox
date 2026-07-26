@@ -23,6 +23,9 @@ int main(int argc,char* argv[])
 	{
 	QGuiApplication app(argc,argv);
 	app.setApplicationName("SARndbox Control Panel");
+	/* QSettings (behind QML's Settings type, used to persist slider positions)
+	   needs an organization identifier to pick a config file path: */
+	app.setOrganizationName("SARndbox");
 
 	QCommandLineParser parser;
 	parser.setApplicationDescription("Control panel for the Augmented Reality Sandbox");

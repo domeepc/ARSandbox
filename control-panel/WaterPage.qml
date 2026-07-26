@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtCore
 
 // Water simulation controls.
 Item {
@@ -9,13 +10,33 @@ Item {
     readonly property int touchTarget: 48
     readonly property int gap: 14
 
+    // Slider positions survive a panel restart; the sandbox itself does not
+    // remember them, so they are resent once it reconnects.
+    Settings {
+        id: persisted
+        category: "water"
+        property real waterSpeed: 1.0
+        property real waterMaxSteps: 30
+        property real waterAttenuation: 0.0
+    }
+
+    Connections {
+        target: pipe
+        function onConnectedChanged() {
+            if (pipe.connected) {
+                pipe.send("waterSpeed " + persisted.waterSpeed.toFixed(2))
+                pipe.send("waterMaxSteps " + persisted.waterMaxSteps.toFixed(0))
+                pipe.send("waterAttenuation " + persisted.waterAttenuation.toFixed(4))
+            }
+        }
+    }
+
     component Setting: ColumnLayout {
         id: setting
         property string label
         property string command
         property real from: 0
         property real to: 1
-        property real value: 0
         property int decimals: 2
 
         Layout.fillWidth: true
@@ -38,9 +59,12 @@ Item {
             implicitHeight: page.touchTarget
             from: setting.from
             to: setting.to
-            value: setting.value
+            value: persisted[setting.command]
             enabled: pipe.connected
-            onPressedChanged: if (!pressed) pipe.send(setting.command + " " + value.toFixed(setting.decimals))
+            onPressedChanged: if (!pressed) {
+                persisted[setting.command] = value
+                pipe.send(setting.command + " " + value.toFixed(setting.decimals))
+            }
         }
     }
 
@@ -73,20 +97,28 @@ Item {
                 Setting {
                     label: "Speed"
                     command: "waterSpeed"
-                    from: 0.0; to: 4.0; value: 1.0
+                    from: 0.0; to: 4.0
                     decimals: 2
                 }
                 Setting {
                     label: "Max steps per frame"
                     command: "waterMaxSteps"
-                    from: 1; to: 80; value: 30
+                    from: 1; to: 80
                     decimals: 0
                 }
                 Setting {
                     label: "Attenuation"
                     command: "waterAttenuation"
-                    from: 0.0; to: 0.05; value: 0.0
+                    from: 0.0; to: 0.05
                     decimals: 4
+                }
+
+                Button {
+                    Layout.fillWidth: true
+                    implicitHeight: page.touchTarget
+                    text: "Drain water"
+                    enabled: pipe.connected
+                    onClicked: pipe.send("drainWater")
                 }
 
         }

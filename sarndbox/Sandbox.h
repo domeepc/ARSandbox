@@ -225,6 +225,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	const AddWaterFunction* addWaterFunction; // Render function registered with the water table
 	bool addWaterFunctionRegistered; // Flag if the water adding function is currently registered with the water table
 	mutable GridRequest gridRequest; // Structure holding pending grid read-back requests
+	mutable bool drainWaterRequested; // Flag whether the water level should be reset to dry on the next display() call; needs a GL context, so the pipe command can't apply it directly
 	std::vector<RenderSettings> renderSettings; // List of per-window rendering settings
 	Vrui::Lightsource* sun; // An external fixed light source
 	GLfloat sunAzimuth; // Azimuth of the fixed light source in degrees
@@ -262,12 +263,16 @@ class Sandbox:public Vrui::Application,public GLObject
 	std::string sandboxLayoutFileName; // Path of the layout file to read and write
 	std::string calibrationMirrorDir; // Directory to copy written calibration files into, or empty
 	void mirrorCalibrationFile(const std::string& fileName) const; // Copies a written calibration file into the mirror directory
+	std::string liveSettingsFileName; // Path of the small, program-owned configuration file live-tunable settings are saved back to; never SARndbox.cfg itself, whose comments a save would silently discard
+	template <class ValueParam>
+	void saveConfigSetting(const char* tag,const ValueParam& value); // Writes a single tag/value pair into liveSettingsFileName, so it is picked up without the control panel having to be open to push it
 	bool unprojectPixel(unsigned int x,unsigned int y,Point& result) const; // Turns a depth image pixel into a 3D camera space point
 	void grabDepthImage(const char* fileName); // Writes the current filtered depth frame as a greyscale image for the panel to show
 	void fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Fits the base plane to a rectangle of the depth image
 	void setExtentsFromRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Takes the four sand corners from a region, keeping the fitted plane
 	void extractPoint(unsigned int x,unsigned int y); // Reports the 3D position of one depth image pixel and keeps it as a corner
 	void writeSandboxLayout(void); // Writes the fitted plane and extracted corners to the layout file
+	void updateBoxTransform(const Plane& basePlane); // Recomputes boxTransform and boxSize from basePlaneCorners and the given plane
 	void resetLayoutCapture(void); // Discards a partly captured layout
 
 	/* Projector calibration. Establishes the projective transform between camera

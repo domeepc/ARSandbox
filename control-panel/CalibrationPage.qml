@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtCore
 
 // Calibration page. Grouped into the two physical devices being calibrated,
 // because a step's meaning depends on which one it belongs to.
@@ -12,7 +13,25 @@ Item {
 
     // Sea level is the base plane offset. The colour map is measured against
     // this plane, so shifting it moves what the map treats as zero elevation.
+    // Persisted (the sandbox itself also remembers it, independent of this --
+    // this is only so the slider shows where it actually left off): sent as an
+    // absolute plane, so the sandbox keeps applying it across restarts even
+    // without the panel open.
     property real seaLevel: 0
+
+    Settings {
+        id: persistedSeaLevel
+        category: "sealevel"
+        property real seaLevel: 0
+    }
+
+    Connections {
+        target: pipe
+        function onConnectedChanged() {
+            if (pipe.connected)
+                dialog.sendSeaLevel()
+        }
+    }
 
     // Projector calibration progress, driven by the sandbox's status messages.
     property bool capturing: false
@@ -243,8 +262,8 @@ Item {
 
                 Note {
                     text: "Shifts the zero elevation of the colour map relative to the " +
-                          "measured plane. Applies immediately but is not saved; put the " +
-                          "value into BoxLayout.txt's offset to keep it."
+                          "measured plane. Applies immediately and is remembered across " +
+                          "restarts, on top of whatever BoxLayout.txt measures."
                 }
 
                 RowLayout {
@@ -256,9 +275,12 @@ Item {
                         id: seaSlider
                         Layout.fillWidth: true
                         implicitHeight: dialog.touchTarget
-                        from: -20; to: 20; value: 0
+                        from: -20; to: 20; value: persistedSeaLevel.seaLevel
                         onValueChanged: dialog.seaLevel = value
-                        onPressedChanged: if (!pressed) dialog.sendSeaLevel()
+                        onPressedChanged: if (!pressed) {
+                            persistedSeaLevel.seaLevel = value
+                            dialog.sendSeaLevel()
+                        }
                     }
                     Label {
                         text: seaSlider.value.toFixed(1) + " cm"
@@ -269,7 +291,11 @@ Item {
                     Button {
                         text: "Reset"
                         implicitHeight: dialog.touchTarget
-                        onClicked: { seaSlider.value = 0; dialog.sendSeaLevel() }
+                        onClicked: {
+                            seaSlider.value = 0
+                            persistedSeaLevel.seaLevel = 0
+                            dialog.sendSeaLevel()
+                        }
                     }
                 }
 

@@ -177,8 +177,13 @@ Sandbox::RenderSettings::RenderSettings(void)
 	 renderWaterSurface(false),waterOpacity(2.0f),
 	 surfaceRenderer(0),waterRenderer(0)
 	{
-	/* Load the default projector transformation: */
+	/* Load the default projector transformation and render from it right away if
+	   it loaded, same as finishProjectorCalibration() does after a fresh
+	   calibration -- a prior calibration should not need "-fpv" repeated on every
+	   launch to actually take effect. -wi/-fpv on the command line and the
+	   "Projector view" toggle can still override this either way. */
 	loadProjectorTransform(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
+	fixProjectorView=projectorTransformValid;
 	}
 
 Sandbox::RenderSettings::RenderSettings(const Sandbox::RenderSettings& source)
@@ -263,6 +268,64 @@ void Sandbox::RenderSettings::loadHeightMap(const char* heightMapName)
 /************************
 Methods of class Sandbox:
 ************************/
+
+namespace {
+
+/* Set by writeSandboxLayout() and consumed by restartIfRequested(), which is
+   registered with atexit() so it runs after Sandbox's destructor already has
+   -- camera closed, threads stopped -- making it safe to replace the process
+   image. A plain flag rather than calling execv() directly from
+   writeSandboxLayout(): the water table (and everything sized from it, like
+   the tool factories that cache its pointer and grid dimensions at startup)
+   can only safely pick up a new domain by being rebuilt from scratch, and the
+   normal Vrui::shutdown()/app-object-destruction path is what already does
+   that cleanly, once, for every member -- duplicating it by hand here would
+   be the same list of teardown steps going stale independently. */
+bool restartRequested=false;
+
+void restartIfRequested(void)
+	{
+	if(!restartRequested)
+		return;
+
+	/* Read the running binary's path and original arguments from /proc rather
+	   than anything captured earlier: Vrui::Application's constructor may have
+	   already stripped its own arguments from the argc/argv Sandbox was given. */
+	char exePath[4096];
+	ssize_t exeLen=readlink("/proc/self/exe",exePath,sizeof(exePath)-1);
+	if(exeLen<0)
+		{
+		std::cerr<<"Unable to restart: readlink(/proc/self/exe) failed: "<<strerror(errno)<<std::endl;
+		return;
+		}
+	exePath[exeLen]='\0';
+
+	std::ifstream cmdlineFile("/proc/self/cmdline",std::ios::binary);
+	std::string cmdline((std::istreambuf_iterator<char>(cmdlineFile)),std::istreambuf_iterator<char>());
+
+	std::vector<std::string> argStrings;
+	std::string::size_type start=0;
+	while(start<cmdline.size())
+		{
+		std::string::size_type end=cmdline.find('\0',start);
+		if(end==std::string::npos)
+			end=cmdline.size();
+		argStrings.push_back(cmdline.substr(start,end-start));
+		start=end+1;
+		}
+
+	std::vector<char*> execArgs;
+	for(std::string& a:argStrings)
+		execArgs.push_back(&a[0]);
+	execArgs.push_back(0);
+
+	execv(exePath,execArgs.data());
+
+	/* Only reached if execv itself failed to start: */
+	std::cerr<<"Unable to restart: execv failed: "<<strerror(errno)<<std::endl;
+	}
+
+}
 
 void Sandbox::rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
 	{
@@ -672,6 +735,53 @@ void Sandbox::mirrorCalibrationFile(const std::string& fileName) const
 	out<<in.rdbuf();
 	}
 
+template <class ValueParam>
+void Sandbox::saveConfigSetting(const char* tag,const ValueParam& value)
+	{
+	/* Live-tunable settings (water speed, contour lines, ...) only ever applied
+	   in memory; a plain restart -- no control panel needed to push them back
+	   in -- silently lost whatever was last set. Written to their own small
+	   file rather than back into SARndbox.cfg: ConfigurationFile::saveAs()
+	   round-trips tag/value pairs faithfully but drops every comment, and
+	   SARndbox.cfg carries real, hand-written rationale for several of its
+	   settings -- a single slider touch would have silently deleted all of it. */
+	try
+		{
+		Misc::ConfigurationFile cfgFile;
+		try
+			{
+			cfgFile.load(liveSettingsFileName.c_str());
+			}
+		catch(const std::runtime_error&)
+			{
+			/* Does not exist yet -- fine, cfgFile is already empty. */
+			}
+		cfgFile.getSection("/SARndbox").storeValue<ValueParam>(tag,value);
+		cfgFile.saveAs(liveSettingsFileName.c_str());
+		}
+	catch(const std::runtime_error& err)
+		{
+		std::cerr<<"Unable to save "<<tag<<" to "<<liveSettingsFileName<<": "<<err.what()<<std::endl;
+		}
+	}
+
+void Sandbox::updateBoxTransform(const Plane& basePlane)
+	{
+	/* Calculate the transformation from camera space to sandbox space. Assumes
+	   basePlaneCorners is already current. */
+	ONTransform::Vector z=basePlane.getNormal();
+	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
+	ONTransform::Vector y=z^x;
+	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
+	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+	boxTransform*=ONTransform::translateToOriginFrom(center);
+
+	/* Calculate the size of the sandbox area: */
+	boxSize=Geometry::dist(center,basePlaneCorners[0]);
+	for(int i=1;i<4;++i)
+		boxSize=Math::max(boxSize,Geometry::dist(center,basePlaneCorners[i]));
+	}
+
 void Sandbox::writeSandboxLayout(void)
 	{
 	if(!pendingPlaneValid)
@@ -713,16 +823,27 @@ void Sandbox::writeSandboxLayout(void)
 
 	mirrorCalibrationFile(sandboxLayoutFileName);
 
-	/* Apply the plane at once so elevation colouring is right without a restart.
-	   The water table is sized from the layout at startup, so the simulation
-	   domain still needs one. */
+	/* Apply the plane and corners at once so elevation colouring and the
+	   calibration view's box outline are right without a restart. The water
+	   table is sized from the layout at startup, so the simulation domain
+	   still needs one. */
 	depthImageRenderer->setBasePlane(pendingPlane);
+	for(int i=0;i<4;++i)
+		basePlaneCorners[i]=corners[i];
+	updateBoxTransform(pendingPlane);
 
 	std::ostringstream done;
 	done<<"layoutWritten "<<Geometry::dist(corners[0],corners[1])<<" "
 	    <<Geometry::dist(corners[0],corners[2]);
 	sendEvent(done.str().c_str());
-	std::cout<<"Sandbox layout written; restart to resize the water simulation domain"<<std::endl;
+	std::cout<<"Sandbox layout written; restarting to resize the water simulation domain"<<std::endl;
+
+	/* The water table's domain is fixed at construction, so picking up the new
+	   layout means rebuilding the process, not just this object. Ask Vrui's main
+	   loop to stop; restartIfRequested() actually re-execs once run() returns and
+	   ~Sandbox() has cleanly torn everything down. */
+	restartRequested=true;
+	Vrui::shutdown();
 	}
 
 #if !KINECT_CONFIG_USE_SHADERPROJECTOR
@@ -1331,7 +1452,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 camera(0),pixelDepthCorrection(0),
 	 frameFilter(0),pauseUpdates(false),
 	 depthImageRenderer(0),
-	 waterTable(0),
+	 waterTable(0),drainWaterRequested(false),
 	 handExtractor(0),addWaterFunction(0),addWaterFunctionRegistered(false),
 	 sun(0),sunAzimuth(315.0f),sunElevation(45.0f),
 	 activeDem(0),
@@ -1343,12 +1464,33 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
 	{
+	/* Runs restartIfRequested() after this object is fully destroyed, whether
+	   run() returns normally or an exception unwinds past it: */
+	atexit(restartIfRequested);
+
 	/* Read the sandbox's default configuration parameters: */
 	std::string sandboxConfigFileName=CONFIG_CONFIGDIR;
 	sandboxConfigFileName.push_back('/');
 	sandboxConfigFileName.append(CONFIG_DEFAULTCONFIGFILENAME);
 	Misc::ConfigurationFile sandboxConfigFile(sandboxConfigFileName.c_str());
 	Misc::ConfigurationFileSection cfg=sandboxConfigFile.getSection("/SARndbox");
+
+	/* Live-tunable settings last set from the control panel, layered on top of
+	   SARndbox.cfg's own defaults below rather than mixed into that same file --
+	   see saveConfigSetting()'s comment for why. May not exist yet: */
+	liveSettingsFileName=CONFIG_CONFIGDIR;
+	liveSettingsFileName.push_back('/');
+	liveSettingsFileName.append(CONFIG_DEFAULTLIVESETTINGSFILENAME);
+	Misc::ConfigurationFile liveSettingsFile;
+	try
+		{
+		liveSettingsFile.load(liveSettingsFileName.c_str());
+		}
+	catch(const std::runtime_error&)
+		{
+		/* Does not exist yet -- nothing was ever changed from the panel. */
+		}
+	Misc::ConfigurationFileSection liveCfg=liveSettingsFile.getSection("/SARndbox");
 	unsigned int cameraIndex=cfg.retrieveValue<int>("./cameraIndex",0);
 	std::string cameraConfiguration=cfg.retrieveString("./cameraConfiguration","Camera");
 	double scale=cfg.retrieveValue<double>("./scaleFactor",100.0);
@@ -1361,6 +1503,13 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	Plane heightMapPlane;
 	if(haveHeightMapPlane)
 		heightMapPlane=cfg.retrieveValue<Plane>("./heightMapPlane");
+	if(liveCfg.hasTag("./heightMapPlane"))
+		{
+		/* The sea level slider's last value, on top of whichever of the above the
+		   panel was showing when it was set: */
+		heightMapPlane=liveCfg.retrieveValue<Plane>("./heightMapPlane");
+		haveHeightMapPlane=true;
+		}
 	unsigned int numAveragingSlots=cfg.retrieveValue<unsigned int>("./numAveragingSlots",30);
 	unsigned int minNumSamples=cfg.retrieveValue<unsigned int>("./minNumSamples",10);
 	unsigned int maxVariance=cfg.retrieveValue<unsigned int>("./maxVariance",2);
@@ -1370,11 +1519,29 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	wtSize[1]=480;
 	wtSize=cfg.retrieveValue<Misc::FixedArray<unsigned int,2> >("./waterTableSize",wtSize);
 	waterSpeed=cfg.retrieveValue<double>("./waterSpeed",1.0);
+	waterSpeed=liveCfg.retrieveValue<double>("./waterSpeed",waterSpeed);
 	waterMaxSteps=cfg.retrieveValue<unsigned int>("./waterMaxSteps",30U);
+	waterMaxSteps=liveCfg.retrieveValue<unsigned int>("./waterMaxSteps",waterMaxSteps);
+	/* WaterTable2's own compiled-in default, expressed in the inverted "how much
+	   to attenuate" terms the control pipe and panel use: */
+	double waterAttenuation=cfg.retrieveValue<double>("./waterAttenuation",1.0-127.0/128.0);
+	waterAttenuation=liveCfg.retrieveValue<double>("./waterAttenuation",waterAttenuation);
 	Math::Interval<double> rainElevationRange=cfg.retrieveValue<Math::Interval<double> >("./rainElevationRange",Math::Interval<double>(-1000.0,1000.0));
 	rainStrength=cfg.retrieveValue<GLfloat>("./rainStrength",0.25f);
 	double evaporationRate=cfg.retrieveValue<double>("./evaporationRate",0.0);
 	float demDistScale=cfg.retrieveValue<float>("./demDistScale",1.0f);
+	/* Live-tunable rendering settings, so a value set from the control panel is
+	   still in effect on the next launch even if the panel is never opened: */
+	GLfloat cfgContourLineSpacing=cfg.retrieveValue<GLfloat>("./contourLineSpacing",0.75f);
+	cfgContourLineSpacing=liveCfg.retrieveValue<GLfloat>("./contourLineSpacing",cfgContourLineSpacing);
+	GLfloat cfgContourLineWidth=cfg.retrieveValue<GLfloat>("./contourLineWidth",1.6f);
+	cfgContourLineWidth=liveCfg.retrieveValue<GLfloat>("./contourLineWidth",cfgContourLineWidth);
+	GLfloat cfgReliefStrength=cfg.retrieveValue<GLfloat>("./reliefStrength",0.35f);
+	cfgReliefStrength=liveCfg.retrieveValue<GLfloat>("./reliefStrength",cfgReliefStrength);
+	sunAzimuth=cfg.retrieveValue<GLfloat>("./sunAzimuth",sunAzimuth);
+	sunAzimuth=liveCfg.retrieveValue<GLfloat>("./sunAzimuth",sunAzimuth);
+	sunElevation=cfg.retrieveValue<GLfloat>("./sunElevation",sunElevation);
+	sunElevation=liveCfg.retrieveValue<GLfloat>("./sunElevation",sunElevation);
 	/* Default to a well-known pipe rather than nothing, and create it below if it
 	   does not exist. Requiring the user to mkfifo and pass -cp meant the control
 	   panel could not be opened from the sandbox's menu at all unless they
@@ -1391,6 +1558,9 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	int remoteServerPortId=26000;
 	int windowIndex=0;
 	renderSettings.push_back(RenderSettings());
+	renderSettings.back().contourLineSpacing=cfgContourLineSpacing;
+	renderSettings.back().contourLineWidth=cfgContourLineWidth;
+	renderSettings.back().reliefStrength=cfgReliefStrength;
 	for(int i=1;i<argc;++i)
 		{
 		if(argv[i][0]=='-')
@@ -1798,20 +1968,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	depthImageRenderer->setIntrinsics(cameraIps);
 	depthImageRenderer->setBasePlane(basePlane);
 	
-	{
-	/* Calculate the transformation from camera space to sandbox space: */
-	ONTransform::Vector z=basePlane.getNormal();
-	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
-	ONTransform::Vector y=z^x;
-	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
-	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
-	boxTransform*=ONTransform::translateToOriginFrom(center);
-	
-	/* Calculate the size of the sandbox area: */
-	boxSize=Geometry::dist(center,basePlaneCorners[0]);
-	for(int i=1;i<4;++i)
-		boxSize=Math::max(boxSize,Geometry::dist(center,basePlaneCorners[i]));
-	}
+	updateBoxTransform(basePlane);
 	
 	/* Calculate a bounding box around all potential surfaces: */
 	bbox=Box::empty;
@@ -1827,7 +1984,8 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		waterTable=new WaterTable2(wtSize[0],wtSize[1],depthImageRenderer,basePlaneCorners);
 		waterTable->setElevationRange(elevationRange.getMin(),rainElevationRange.getMax());
 		waterTable->setWaterDeposit(evaporationRate);
-		
+		waterTable->setAttenuation(GLfloat(1.0-waterAttenuation));
+
 		/* Register a render function with the water table: */
 		addWaterFunction=Misc::createFunctionCall(this,&Sandbox::addWater);
 		waterTable->addRenderFunction(addWaterFunction);
@@ -2054,8 +2212,6 @@ void Sandbox::frame(void)
 		lastFilteredFrame=filteredFrames.getLockedValue();
 		}
 
-	/* Check if a new color frame has arrived for the calibration camera view: */
-
 	if(handExtractor!=0)
 		{
 		/* Lock the most recent extracted hand list: */
@@ -2108,6 +2264,7 @@ void Sandbox::frame(void)
 						waterSpeed=atof(tokens[1].c_str());
 						if(waterSpeedSlider!=0)
 							waterSpeedSlider->setValue(waterSpeed);
+						saveConfigSetting("./waterSpeed",waterSpeed);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterSpeed control pipe command"<<std::endl;
@@ -2119,6 +2276,7 @@ void Sandbox::frame(void)
 						waterMaxSteps=atoi(tokens[1].c_str());
 						if(waterMaxStepsSlider!=0)
 							waterMaxStepsSlider->setValue(waterMaxSteps);
+						saveConfigSetting("./waterMaxSteps",waterMaxSteps);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterMaxSteps control pipe command"<<std::endl;
@@ -2132,9 +2290,18 @@ void Sandbox::frame(void)
 							waterTable->setAttenuation(GLfloat(1.0-attenuation));
 						if(waterAttenuationSlider!=0)
 							waterAttenuationSlider->setValue(attenuation);
+						saveConfigSetting("./waterAttenuation",attenuation);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterAttenuation control pipe command"<<std::endl;
+					}
+				else if(isToken(tokens[0],"drainWater"))
+					{
+					/* Setting the water level needs a GL context, which the pipe
+					   command thread does not have; defer to the next display()
+					   call, same as the grid read-back requests do. */
+					if(waterTable!=0)
+						drainWaterRequested=true;
 					}
 				else if(isToken(tokens[0],"colorMap"))
 					{
@@ -2170,6 +2337,7 @@ void Sandbox::frame(void)
 						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 							if(rsIt->elevationColorMap!=0)
 								rsIt->elevationColorMap->calcTexturePlane(heightMapPlane);
+						saveConfigSetting("./heightMapPlane",heightMapPlane);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for heightMapPlane control pipe command"<<std::endl;
@@ -2205,6 +2373,7 @@ void Sandbox::frame(void)
 							/* Override the contour line spacing of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setContourLineDistance(contourLineSpacing);
+							saveConfigSetting("./contourLineSpacing",contourLineSpacing);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<contourLineSpacing<<" for contourLineSpacing control pipe command"<<std::endl;
@@ -2225,6 +2394,7 @@ void Sandbox::frame(void)
 							/* Override the contour line width of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setContourLineWidth(contourLineWidth);
+							saveConfigSetting("./contourLineWidth",contourLineWidth);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<contourLineWidth<<" for contourLineWidth control pipe command"<<std::endl;
@@ -2326,6 +2496,7 @@ void Sandbox::frame(void)
 							/* Override the relief strength of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setReliefStrength(reliefStrength);
+							saveConfigSetting("./reliefStrength",reliefStrength);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<reliefStrength<<" for reliefStrength control pipe command; must be in [0, 1]"<<std::endl;
@@ -2338,7 +2509,11 @@ void Sandbox::frame(void)
 					if(tokens.size()==3)
 						{
 						/* Parse the azimuth and elevation and re-aim the fixed light source: */
-						setSunDirection(GLfloat(atof(tokens[1].c_str())),GLfloat(atof(tokens[2].c_str())));
+						GLfloat azimuth=GLfloat(atof(tokens[1].c_str()));
+						GLfloat elevation=GLfloat(atof(tokens[2].c_str()));
+						setSunDirection(azimuth,elevation);
+						saveConfigSetting("./sunAzimuth",azimuth);
+						saveConfigSetting("./sunElevation",elevation);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for sunDirection control pipe command"<<std::endl;
@@ -2453,35 +2628,23 @@ void Sandbox::drawCalibrationView(GLContextData& contextData,const int viewport[
 	glLineWidth(2.0f);
 
 	/* Fit the sandbox area to the window, keeping its aspect ratio: */
-	double bMin[2],bMax[2];
-	for(int i=0;i<2;++i)
-		{
-		bMin[i]=Math::Constants<double>::max;
-		bMax[i]=Math::Constants<double>::min;
-		}
+	Box box=Box::empty;
 	for(int c=0;c<4;++c)
-		{
-		Point bp=boxTransform.transform(basePlaneCorners[c]);
-		for(int i=0;i<2;++i)
-			{
-			bMin[i]=Math::min(bMin[i],bp[i]);
-			bMax[i]=Math::max(bMax[i],bp[i]);
-			}
-		}
-	double bw=bMax[0]-bMin[0];
-	double bh=bMax[1]-bMin[1];
+		box.addPoint(boxTransform.transform(basePlaneCorners[c]));
+	double bw=box.getSize(0);
+	double bh=box.getSize(1);
 	glMatrixMode(GL_PROJECTION);
 	glPushMatrix();
 	glLoadIdentity();
 	if(bw*double(viewport[3])>=double(viewport[2])*bh) // Sandbox area is wider than the window
 		{
 		double filler=Math::div2((bw*double(viewport[3]))/double(viewport[2])-bh);
-		glOrtho(bMin[0],bMax[0],bMin[1]-filler,bMax[1]+filler,-200.0,200.0);
+		glOrtho(box.min[0],box.max[0],box.min[1]-filler,box.max[1]+filler,-200.0,200.0);
 		}
 	else
 		{
 		double filler=Math::div2((bh*double(viewport[2]))/double(viewport[3])-bw);
-		glOrtho(bMin[0]-filler,bMax[0]+filler,bMin[1],bMax[1],-200.0,200.0);
+		glOrtho(box.min[0]-filler,box.max[0]+filler,box.min[1],box.max[1],-200.0,200.0);
 		}
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
@@ -2549,7 +2712,19 @@ void Sandbox::display(GLContextData& contextData) const
 		
 		/* Update the water table's bathymetry grid: */
 		waterTable->updateBathymetry(contextData);
-		
+
+		/* Check if a drain was requested. Done after updateBathymetry, not before:
+		   setWaterLevel adapts the given level to the *current* terrain, so the
+		   result is exactly dry rather than a flat pool wherever the sand sits
+		   above the water table's lowest possible elevation. */
+		if(drainWaterRequested)
+			{
+			const GLsizei* wtGridSize=waterTable->getSize();
+			std::vector<GLfloat> dry(size_t(wtGridSize[0])*size_t(wtGridSize[1]),GLfloat(waterTable->getDomain().min[2]));
+			waterTable->setWaterLevel(dry.data(),contextData);
+			drainWaterRequested=false;
+			}
+
 		/* Check if the grid request is active and wants bathymetry data: */
 		if(request.isActive()&&request.bathymetryBuffer!=0)
 			{
