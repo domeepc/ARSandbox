@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtCore
+import Qt.labs.settings
 
 // Calibration page. Grouped into the two physical devices being calibrated,
 // because a step's meaning depends on which one it belongs to.

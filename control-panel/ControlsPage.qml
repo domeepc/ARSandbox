@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtCore
+import Qt.labs.settings
 
 // Live controls. Everything here maps to a control pipe command the sandbox
 // already accepts, so nothing on this page needs the sandbox to be modified.
