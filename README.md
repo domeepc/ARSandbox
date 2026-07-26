@@ -67,7 +67,9 @@ starts the sandbox. On first run it will say:
 No projector calibration yet; using the default projection.
 ```
 
-That is expected — the projection is not aligned to the sand until step 5.
+That is expected — the projection is not aligned to the sand until step 5. On
+every later run, once step 5 has been done once, the saved calibration is
+applied automatically — no need to remember `-fpv`.
 
 ## 2. Open the control panel
 
@@ -106,7 +108,11 @@ Press **Grab depth image** to pull the current depth frame into the panel, then:
 3. Press **Write BoxLayout.txt**.
 
 Nothing is written until that last press, so a misclick costs you a retry rather
-than your calibration. The previous file is kept as `.bak`.
+than your calibration. The previous file is kept as `.bak`. The sandbox restarts
+itself right afterward — the water simulation's grid is sized from this file
+once at startup and cannot be resized while running, so re-measuring the box
+needs a fresh process to take effect. The panel reconnects on its own once it
+comes back up.
 
 The panel then checks the result and says so plainly:
 
@@ -126,14 +132,25 @@ against the projector's own specification, because a wrong pixel size produces a
 defective calibration with no error reported. A screen rotated with `xrandr`
 reports its rotated dimensions.
 
-Press **Start**. The sandbox projects a crosshair. Put a flat circular target
-with a marked centre — a CD with a paper disk glued on works — flat on the sand
-with its centre on the crosshair, take your hands out of view, and press
-**Capture this point**. The crosshair turns green when the target is found.
-Repeat for all 12 points.
+Press **Start**. The sandbox switches to a straight-down view of the box for
+the duration: the current 3D scan as a yellow facade, a white cross marking
+where to place the target, and — whenever the extractor is currently tracking
+one — the detected disk itself drawn in blue at its measured position, tilt and
+radius. The background is removed for this view, since otherwise a target held
+close to the sand or over a mound would merge into the surrounding surface and
+fail detection.
+
+Put a flat circular target with a marked centre — a CD with a paper disk glued
+on works — flat on the sand with its centre on the cross, take your hands out
+of view, and press **Capture this point** once the blue disk appears there.
+Repeat for all 12 points. A set of 12 points that vary in height by less than
+10cm is rejected outright rather than accepted with a good-looking residual —
+a projective camera cannot be recovered from points that are all roughly in one
+plane, even though the fit still passes through every one of them.
 
 The RMS residual in projector pixels is reported at the end; that is the honest
-measure of whether the capture was any good.
+measure of whether the capture was any good. The previous matrix is kept as
+`ProjectorMatrix.dat.bak`.
 
 ## 6. Run it
 
@@ -144,13 +161,21 @@ no restart. Relief shading only shows with `-uhs`.
 
 ![Water tab](docs/images/panel-water.png)
 
-Water speed, step budget and attenuation are live too. If the simulation cannot
-keep up it says so once every few seconds and tells you which knob to turn:
+Water speed, step budget and attenuation are live too, along with a **Drain
+water** button that empties the simulated water table on demand. If the
+simulation cannot keep up it says so once every few seconds and tells you which
+knob to turn:
 
 ```
 Water simulation is behind by 0.018 s per frame; raise waterMaxSteps
 (currently 50) or lower waterTableSize in SARndbox.cfg
 ```
+
+Every slider on these two tabs, and the sea level offset in the Calibration
+tab, survives both closing the panel and restarting the sandbox itself — the
+panel remembers its own slider positions and resends them once it reconnects,
+and the sandbox separately saves the same values to `LiveSettings.cfg` so a
+kiosk-style launch that never opens the panel keeps whatever was last tuned.
 
 ---
 
@@ -215,6 +240,24 @@ about 1.0 s to 0.5 s.
 
 **Live control** of contour width, relief strength, sun direction, pause and the
 whole calibration flow, over the control pipe.
+
+**Calibration shows what it sees.** Projector alignment switches the display to
+a straight-down scan of the sand — the live 3D point cloud as a yellow facade,
+the target cross in white, and the disk the extractor is currently tracking in
+blue at its measured position, tilt and radius. The background is removed for
+the duration, and a capture whose 12 points are too close to coplanar is
+rejected rather than silently producing a matrix that fits every tie point but
+is wrong everywhere else.
+
+**Calibration survives a restart.** A saved `ProjectorMatrix.dat` is applied
+automatically on startup — no more remembering `-fpv`. Re-measuring the base
+plane restarts the process automatically too, since the water simulation's grid
+is sized from it once at startup and cannot be resized in place.
+
+**Live settings persist**, both in the panel (a restart resends whatever the
+sliders were last set to) and in the sandbox itself (a new `LiveSettings.cfg`,
+so a kiosk launch that never opens the panel keeps its tuning too). The sea
+level offset persists the same way, and a **Drain water** button was added.
 
 Full detail, in Croatian, in [docs/dokumentacija-instalacija-vrui.md](docs/dokumentacija-instalacija-vrui.md).
 
