@@ -672,6 +672,23 @@ void Sandbox::mirrorCalibrationFile(const std::string& fileName) const
 	out<<in.rdbuf();
 	}
 
+void Sandbox::updateBoxTransform(const Plane& basePlane)
+	{
+	/* Calculate the transformation from camera space to sandbox space. Assumes
+	   basePlaneCorners is already current. */
+	ONTransform::Vector z=basePlane.getNormal();
+	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
+	ONTransform::Vector y=z^x;
+	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
+	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+	boxTransform*=ONTransform::translateToOriginFrom(center);
+
+	/* Calculate the size of the sandbox area: */
+	boxSize=Geometry::dist(center,basePlaneCorners[0]);
+	for(int i=1;i<4;++i)
+		boxSize=Math::max(boxSize,Geometry::dist(center,basePlaneCorners[i]));
+	}
+
 void Sandbox::writeSandboxLayout(void)
 	{
 	if(!pendingPlaneValid)
@@ -713,10 +730,14 @@ void Sandbox::writeSandboxLayout(void)
 
 	mirrorCalibrationFile(sandboxLayoutFileName);
 
-	/* Apply the plane at once so elevation colouring is right without a restart.
-	   The water table is sized from the layout at startup, so the simulation
-	   domain still needs one. */
+	/* Apply the plane and corners at once so elevation colouring and the
+	   calibration view's box outline are right without a restart. The water
+	   table is sized from the layout at startup, so the simulation domain
+	   still needs one. */
 	depthImageRenderer->setBasePlane(pendingPlane);
+	for(int i=0;i<4;++i)
+		basePlaneCorners[i]=corners[i];
+	updateBoxTransform(pendingPlane);
 
 	std::ostringstream done;
 	done<<"layoutWritten "<<Geometry::dist(corners[0],corners[1])<<" "
@@ -1798,20 +1819,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	depthImageRenderer->setIntrinsics(cameraIps);
 	depthImageRenderer->setBasePlane(basePlane);
 	
-	{
-	/* Calculate the transformation from camera space to sandbox space: */
-	ONTransform::Vector z=basePlane.getNormal();
-	ONTransform::Vector x=(basePlaneCorners[1]-basePlaneCorners[0])+(basePlaneCorners[3]-basePlaneCorners[2]);
-	ONTransform::Vector y=z^x;
-	boxTransform=ONTransform::rotate(Geometry::invert(ONTransform::Rotation::fromBaseVectors(x,y)));
-	ONTransform::Point center=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
-	boxTransform*=ONTransform::translateToOriginFrom(center);
-	
-	/* Calculate the size of the sandbox area: */
-	boxSize=Geometry::dist(center,basePlaneCorners[0]);
-	for(int i=1;i<4;++i)
-		boxSize=Math::max(boxSize,Geometry::dist(center,basePlaneCorners[i]));
-	}
+	updateBoxTransform(basePlane);
 	
 	/* Calculate a bounding box around all potential surfaces: */
 	bbox=Box::empty;

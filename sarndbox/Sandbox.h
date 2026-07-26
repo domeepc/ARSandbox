@@ -268,6 +268,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	void setExtentsFromRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Takes the four sand corners from a region, keeping the fitted plane
 	void extractPoint(unsigned int x,unsigned int y); // Reports the 3D position of one depth image pixel and keeps it as a corner
 	void writeSandboxLayout(void); // Writes the fitted plane and extracted corners to the layout file
+	void updateBoxTransform(const Plane& basePlane); // Recomputes boxTransform and boxSize from basePlaneCorners and the given plane
 	void resetLayoutCapture(void); // Discards a partly captured layout
 
 	/* Projector calibration. Establishes the projective transform between camera
