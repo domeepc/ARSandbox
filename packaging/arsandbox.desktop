@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Augmented Reality Sandbox
+Comment=Kinect depth camera + projector topography sandbox
+Exec=arsandbox
+Icon=arsandbox
+Terminal=false
+Categories=Science;

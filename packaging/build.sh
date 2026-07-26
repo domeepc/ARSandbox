@@ -123,6 +123,16 @@ install -m755 "$REPO/scripts/run-sandbox.sh" "$STAGEPREFIX/bin/run-sandbox.sh"
 install -d "$STAGEROOT/usr/bin"
 install -m755 "$REPO/packaging/arsandbox.sh" "$STAGEROOT/usr/bin/arsandbox"
 
+# ------------------------------------------------------------- desktop entry
+
+# Icon cache/desktop database refresh is left to desktop-file-utils' and
+# hicolor-icon-theme's own dpkg/rpm triggers, which both distros already
+# ship - no --after-install hook needed here.
+install -d "$STAGEROOT/usr/share/applications"
+install -m644 "$REPO/packaging/arsandbox.desktop" "$STAGEROOT/usr/share/applications/arsandbox.desktop"
+install -d "$STAGEROOT/usr/share/icons/hicolor/scalable/apps"
+install -m644 "$REPO/packaging/arsandbox.svg" "$STAGEROOT/usr/share/icons/hicolor/scalable/apps/arsandbox.svg"
+
 # ---------------------------------------------------------------------- udev
 
 # The udev rules are static files in the Vrui/Kinect sources; `make
