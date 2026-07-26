@@ -263,6 +263,9 @@ class Sandbox:public Vrui::Application,public GLObject
 	std::string sandboxLayoutFileName; // Path of the layout file to read and write
 	std::string calibrationMirrorDir; // Directory to copy written calibration files into, or empty
 	void mirrorCalibrationFile(const std::string& fileName) const; // Copies a written calibration file into the mirror directory
+	std::string liveSettingsFileName; // Path of the small, program-owned configuration file live-tunable settings are saved back to; never SARndbox.cfg itself, whose comments a save would silently discard
+	template <class ValueParam>
+	void saveConfigSetting(const char* tag,const ValueParam& value); // Writes a single tag/value pair into liveSettingsFileName, so it is picked up without the control panel having to be open to push it
 	bool unprojectPixel(unsigned int x,unsigned int y,Point& result) const; // Turns a depth image pixel into a 3D camera space point
 	void grabDepthImage(const char* fileName); // Writes the current filtered depth frame as a greyscale image for the panel to show
 	void fitPlaneToRegion(unsigned int x0,unsigned int y0,unsigned int x1,unsigned int y1); // Fits the base plane to a rectangle of the depth image

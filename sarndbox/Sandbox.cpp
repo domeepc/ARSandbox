@@ -735,6 +735,36 @@ void Sandbox::mirrorCalibrationFile(const std::string& fileName) const
 	out<<in.rdbuf();
 	}
 
+template <class ValueParam>
+void Sandbox::saveConfigSetting(const char* tag,const ValueParam& value)
+	{
+	/* Live-tunable settings (water speed, contour lines, ...) only ever applied
+	   in memory; a plain restart -- no control panel needed to push them back
+	   in -- silently lost whatever was last set. Written to their own small
+	   file rather than back into SARndbox.cfg: ConfigurationFile::saveAs()
+	   round-trips tag/value pairs faithfully but drops every comment, and
+	   SARndbox.cfg carries real, hand-written rationale for several of its
+	   settings -- a single slider touch would have silently deleted all of it. */
+	try
+		{
+		Misc::ConfigurationFile cfgFile;
+		try
+			{
+			cfgFile.load(liveSettingsFileName.c_str());
+			}
+		catch(const std::runtime_error&)
+			{
+			/* Does not exist yet -- fine, cfgFile is already empty. */
+			}
+		cfgFile.getSection("/SARndbox").storeValue<ValueParam>(tag,value);
+		cfgFile.saveAs(liveSettingsFileName.c_str());
+		}
+	catch(const std::runtime_error& err)
+		{
+		std::cerr<<"Unable to save "<<tag<<" to "<<liveSettingsFileName<<": "<<err.what()<<std::endl;
+		}
+	}
+
 void Sandbox::updateBoxTransform(const Plane& basePlane)
 	{
 	/* Calculate the transformation from camera space to sandbox space. Assumes
@@ -1444,6 +1474,23 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	sandboxConfigFileName.append(CONFIG_DEFAULTCONFIGFILENAME);
 	Misc::ConfigurationFile sandboxConfigFile(sandboxConfigFileName.c_str());
 	Misc::ConfigurationFileSection cfg=sandboxConfigFile.getSection("/SARndbox");
+
+	/* Live-tunable settings last set from the control panel, layered on top of
+	   SARndbox.cfg's own defaults below rather than mixed into that same file --
+	   see saveConfigSetting()'s comment for why. May not exist yet: */
+	liveSettingsFileName=CONFIG_CONFIGDIR;
+	liveSettingsFileName.push_back('/');
+	liveSettingsFileName.append(CONFIG_DEFAULTLIVESETTINGSFILENAME);
+	Misc::ConfigurationFile liveSettingsFile;
+	try
+		{
+		liveSettingsFile.load(liveSettingsFileName.c_str());
+		}
+	catch(const std::runtime_error&)
+		{
+		/* Does not exist yet -- nothing was ever changed from the panel. */
+		}
+	Misc::ConfigurationFileSection liveCfg=liveSettingsFile.getSection("/SARndbox");
 	unsigned int cameraIndex=cfg.retrieveValue<int>("./cameraIndex",0);
 	std::string cameraConfiguration=cfg.retrieveString("./cameraConfiguration","Camera");
 	double scale=cfg.retrieveValue<double>("./scaleFactor",100.0);
@@ -1465,11 +1512,29 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	wtSize[1]=480;
 	wtSize=cfg.retrieveValue<Misc::FixedArray<unsigned int,2> >("./waterTableSize",wtSize);
 	waterSpeed=cfg.retrieveValue<double>("./waterSpeed",1.0);
+	waterSpeed=liveCfg.retrieveValue<double>("./waterSpeed",waterSpeed);
 	waterMaxSteps=cfg.retrieveValue<unsigned int>("./waterMaxSteps",30U);
+	waterMaxSteps=liveCfg.retrieveValue<unsigned int>("./waterMaxSteps",waterMaxSteps);
+	/* WaterTable2's own compiled-in default, expressed in the inverted "how much
+	   to attenuate" terms the control pipe and panel use: */
+	double waterAttenuation=cfg.retrieveValue<double>("./waterAttenuation",1.0-127.0/128.0);
+	waterAttenuation=liveCfg.retrieveValue<double>("./waterAttenuation",waterAttenuation);
 	Math::Interval<double> rainElevationRange=cfg.retrieveValue<Math::Interval<double> >("./rainElevationRange",Math::Interval<double>(-1000.0,1000.0));
 	rainStrength=cfg.retrieveValue<GLfloat>("./rainStrength",0.25f);
 	double evaporationRate=cfg.retrieveValue<double>("./evaporationRate",0.0);
 	float demDistScale=cfg.retrieveValue<float>("./demDistScale",1.0f);
+	/* Live-tunable rendering settings, so a value set from the control panel is
+	   still in effect on the next launch even if the panel is never opened: */
+	GLfloat cfgContourLineSpacing=cfg.retrieveValue<GLfloat>("./contourLineSpacing",0.75f);
+	cfgContourLineSpacing=liveCfg.retrieveValue<GLfloat>("./contourLineSpacing",cfgContourLineSpacing);
+	GLfloat cfgContourLineWidth=cfg.retrieveValue<GLfloat>("./contourLineWidth",1.6f);
+	cfgContourLineWidth=liveCfg.retrieveValue<GLfloat>("./contourLineWidth",cfgContourLineWidth);
+	GLfloat cfgReliefStrength=cfg.retrieveValue<GLfloat>("./reliefStrength",0.35f);
+	cfgReliefStrength=liveCfg.retrieveValue<GLfloat>("./reliefStrength",cfgReliefStrength);
+	sunAzimuth=cfg.retrieveValue<GLfloat>("./sunAzimuth",sunAzimuth);
+	sunAzimuth=liveCfg.retrieveValue<GLfloat>("./sunAzimuth",sunAzimuth);
+	sunElevation=cfg.retrieveValue<GLfloat>("./sunElevation",sunElevation);
+	sunElevation=liveCfg.retrieveValue<GLfloat>("./sunElevation",sunElevation);
 	/* Default to a well-known pipe rather than nothing, and create it below if it
 	   does not exist. Requiring the user to mkfifo and pass -cp meant the control
 	   panel could not be opened from the sandbox's menu at all unless they
@@ -1486,6 +1551,9 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	int remoteServerPortId=26000;
 	int windowIndex=0;
 	renderSettings.push_back(RenderSettings());
+	renderSettings.back().contourLineSpacing=cfgContourLineSpacing;
+	renderSettings.back().contourLineWidth=cfgContourLineWidth;
+	renderSettings.back().reliefStrength=cfgReliefStrength;
 	for(int i=1;i<argc;++i)
 		{
 		if(argv[i][0]=='-')
@@ -1909,7 +1977,8 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		waterTable=new WaterTable2(wtSize[0],wtSize[1],depthImageRenderer,basePlaneCorners);
 		waterTable->setElevationRange(elevationRange.getMin(),rainElevationRange.getMax());
 		waterTable->setWaterDeposit(evaporationRate);
-		
+		waterTable->setAttenuation(GLfloat(1.0-waterAttenuation));
+
 		/* Register a render function with the water table: */
 		addWaterFunction=Misc::createFunctionCall(this,&Sandbox::addWater);
 		waterTable->addRenderFunction(addWaterFunction);
@@ -2188,6 +2257,7 @@ void Sandbox::frame(void)
 						waterSpeed=atof(tokens[1].c_str());
 						if(waterSpeedSlider!=0)
 							waterSpeedSlider->setValue(waterSpeed);
+						saveConfigSetting("./waterSpeed",waterSpeed);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterSpeed control pipe command"<<std::endl;
@@ -2199,6 +2269,7 @@ void Sandbox::frame(void)
 						waterMaxSteps=atoi(tokens[1].c_str());
 						if(waterMaxStepsSlider!=0)
 							waterMaxStepsSlider->setValue(waterMaxSteps);
+						saveConfigSetting("./waterMaxSteps",waterMaxSteps);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterMaxSteps control pipe command"<<std::endl;
@@ -2212,6 +2283,7 @@ void Sandbox::frame(void)
 							waterTable->setAttenuation(GLfloat(1.0-attenuation));
 						if(waterAttenuationSlider!=0)
 							waterAttenuationSlider->setValue(attenuation);
+						saveConfigSetting("./waterAttenuation",attenuation);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for waterAttenuation control pipe command"<<std::endl;
@@ -2293,6 +2365,7 @@ void Sandbox::frame(void)
 							/* Override the contour line spacing of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setContourLineDistance(contourLineSpacing);
+							saveConfigSetting("./contourLineSpacing",contourLineSpacing);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<contourLineSpacing<<" for contourLineSpacing control pipe command"<<std::endl;
@@ -2313,6 +2386,7 @@ void Sandbox::frame(void)
 							/* Override the contour line width of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setContourLineWidth(contourLineWidth);
+							saveConfigSetting("./contourLineWidth",contourLineWidth);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<contourLineWidth<<" for contourLineWidth control pipe command"<<std::endl;
@@ -2414,6 +2488,7 @@ void Sandbox::frame(void)
 							/* Override the relief strength of all surface renderers: */
 							for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 								rsIt->surfaceRenderer->setReliefStrength(reliefStrength);
+							saveConfigSetting("./reliefStrength",reliefStrength);
 							}
 						else
 							std::cerr<<"Invalid parameter "<<reliefStrength<<" for reliefStrength control pipe command; must be in [0, 1]"<<std::endl;
@@ -2426,7 +2501,11 @@ void Sandbox::frame(void)
 					if(tokens.size()==3)
 						{
 						/* Parse the azimuth and elevation and re-aim the fixed light source: */
-						setSunDirection(GLfloat(atof(tokens[1].c_str())),GLfloat(atof(tokens[2].c_str())));
+						GLfloat azimuth=GLfloat(atof(tokens[1].c_str()));
+						GLfloat elevation=GLfloat(atof(tokens[2].c_str()));
+						setSunDirection(azimuth,elevation);
+						saveConfigSetting("./sunAzimuth",azimuth);
+						saveConfigSetting("./sunElevation",elevation);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for sunDirection control pipe command"<<std::endl;

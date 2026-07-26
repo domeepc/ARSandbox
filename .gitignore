@@ -19,3 +19,9 @@ sarndbox/etc/SARndbox-2.8/ProjectorMatrix.dat
 # Calibration backups written by the sandbox when it rewrites a layout
 *.bak
 *.save
+
+# Live-tunable settings (water speed, contour lines, sun direction, ...) last
+# set from the control panel. Runtime state, not source -- see
+# saveConfigSetting()'s comment in Sandbox.cpp for why this is a separate file
+# from SARndbox.cfg rather than entries in it.
+sarndbox/etc/SARndbox-2.8/LiveSettings.cfg
