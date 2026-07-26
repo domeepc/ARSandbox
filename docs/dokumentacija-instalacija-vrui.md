@@ -951,7 +951,9 @@ No projector calibration yet; using the default projection.
 ```
 
 Riječ je o očekivanoj obavijesti, a ne o pogrešci: projekcija još nije poravnata
-s površinom pijeska, što se postiže tek u koraku C.6.
+s površinom pijeska, što se postiže tek u koraku C.6. Pri svakom sljedećem
+pokretanju, nakon što je korak C.6 jednom provedena, spremljeno umjeravanje
+primjenjuje se automatski — nije potrebno ručno navoditi `-fpv`.
 
 ## C.3. Otvaranje upravljačke ploče
 
@@ -997,7 +999,11 @@ upravljačku ploču, nakon čega slijedi:
 
 Datoteka se ne mijenja sve do posljednjeg pritiska, pa pogrešan klik stoji samo
 ponavljanja postupka, a ne izgubljenog umjeravanja. Prethodna se datoteka čuva s
-nastavkom `.bak`.
+nastavkom `.bak`. Sustav se odmah zatim sam ponovno pokreće — mreža simulacije
+vode dimenzionira se prema ovoj datoteci samo jednom, pri pokretanju, i ne može
+se promijeniti tijekom rada, pa ponovno mjerenje sanduka zahtijeva svjež proces
+da bi uistinu stupilo na snagu. Upravljačka ploča se sama ponovno povezuje čim
+se sustav vrati.
 
 Upravljačka ploča zatim provjerava vjerodostojnost rezultata:
 
@@ -1018,14 +1024,26 @@ prema specifikaciji projektora, jer pogrešna razlučivost daje neispravno
 umjeravanje bez ikakve dojave o pogrešci. Zaslon zakrenut alatom `xrandr`
 prijavljuje zakrenute dimenzije.
 
-Pritiskom na **Start** sustav projicira križić. Plosnati kružni mjerni cilj s
-označenim središtem — primjerice optički disk s prilijepljenim papirnatim krugom
-— postavlja se ravno na pijesak tako da mu se središte poklopi s križićem, ruke
-se uklone iz vidnog polja i pritisne se **Capture this point**. Križić postaje
-zelen kada je cilj pronađen. Postupak se ponavlja za svih 12 točaka.
+Pritiskom na **Start** prikaz se za vrijeme umjeravanja prebacuje na pogled
+ravno odozgor na sanduk: tekuće prostorno očitanje prikazuje se kao žuta
+ploha, bijeli križić označava mjesto na koje treba postaviti cilj, a otkriveni
+disk — dok ga alat za prepoznavanje uistinu prati — iscrtava se plavom bojom na
+svojem izmjerenom položaju, nagibu i polumjeru. Pozadina se za vrijeme
+umjeravanja uklanja, jer bi se u protivnom cilj postavljen blizu pijeska ili
+iznad humka spojio s okolnom površinom i ne bi bio prepoznat.
+
+Plosnati kružni mjerni cilj s označenim središtem — primjerice optički disk s
+prilijepljenim papirnatim krugom — postavlja se ravno na pijesak tako da mu se
+središte poklopi s križićem, ruke se uklone iz vidnog polja, i tek kada se na
+tom mjestu pojavi plavi disk pritisne se **Capture this point**. Postupak se
+ponavlja za svih 12 točaka. Skup od 12 točaka čija se visina razlikuje za manje
+od 10 cm odbija se u potpunosti, umjesto da se prihvati uz naizgled dobar
+rezidual — projekcijska kamera ne može se odrediti iz točaka koje sve leže
+približno u jednoj ravnini, čak i kada prilagodba prolazi kroz svaku od njih.
 
 Na kraju se dojavljuje efektivna vrijednost odstupanja u slikovnim elementima
 projektora, što je mjerodavan pokazatelj kakvoće provedenog umjeravanja.
+Prethodna se matrica čuva s nastavkom `.bak`.
 
 ## C.7. Rad sustava
 
@@ -1037,14 +1055,22 @@ samo uz prekidač `-uhs`.
 
 ![Kartica simulacije vode](images/panel-water.png)
 
-Brzina vode, najveći broj koraka i prigušenje također se mijenjaju tijekom rada.
-Ako simulacija ne uspijeva pratiti stvarno vrijeme, sustav to dojavljuje svakih
+Brzina vode, najveći broj koraka i prigušenje također se mijenjaju tijekom rada,
+uz gumb **Drain water** koji na zahtjev prazni simuliranu vodenu površinu. Ako
+simulacija ne uspijeva pratiti stvarno vrijeme, sustav to dojavljuje svakih
 nekoliko sekundi i navodi koji parametar treba promijeniti:
 
 ```
 Water simulation is behind by 0.018 s per frame; raise waterMaxSteps
 (currently 50) or lower waterTableSize in SARndbox.cfg
 ```
+
+Svaki klizač na ovim dvjema karticama, kao i pomak razine mora u kartici
+umjeravanja, ostaje sačuvan i pri zatvaranju upravljačke ploče i pri ponovnom
+pokretanju samog sustava: ploča pamti položaje svojih klizača i ponovno ih
+šalje čim se poveže, a sustav dodatno zapisuje iste vrijednosti u datoteku
+`LiveSettings.cfg`, pa se zadnje postavljene vrijednosti primjenjuju i pri
+pokretanju bez upravljačke ploče.
 
 ## C.8. Sprega dvaju programa
 
@@ -1064,3 +1090,144 @@ može poremetiti rad sanduka.
 Svaka datoteka umjeravanja koju sustav zapiše istodobno se preslikava u
 direktorij `config/` (postavka `calibrationMirrorDir`), čime se sprječava
 razilaženje verzionirane preslike od one koju izvedbeni program stvarno čita.
+
+---
+
+# Dodatak D: Izmjene nakon prvog izdanja upravljačke ploče
+
+Dodatak B opisuje izmjene provedene do trenutka kada je upravljanje sustavom
+prvi put u cijelosti preneseno na upravljačku ploču. Ovaj dodatak nastavlja taj
+opis izmjenama koje su slijedile: umjeravanje projektora pokazalo se
+nepouzdanim u praksi, a nekoliko postavki koje se mijenjaju tijekom rada
+gubilo se pri svakom ponovnom pokretanju.
+
+## D.1. Preinaka kalibracijskog prikaza
+
+Prvobitna zamjena za križić bio je uživo prikaz slike u boji s Kinectove
+kamere, uz oznaku otkrivenog cilja. Pokazalo se da je to pogrešan pristup iz
+dva razloga. Prvo, oznaka se iscrtavala u pogrešnom prostoru: matrica
+`colorProjection` preslikava iz prostora dubinske slike u koordinate teksture
+slike u boji, a alat za prepoznavanje diska (`DiskExtractor`) svoje rezultate
+izražava u prostornim (kamerinim) koordinatama, pa oznaka nikada nije padala na
+stvarni položaj diska. Drugo, uživo slika u boji sama po sebi ne govori ništa o
+tome gdje se cilj nalazi unutar sanduka — potreban joj je zaseban tok slike u
+boji, teksturni objekt i ponovno pokretanje kamere pri svakom početku i kraju
+umjeravanja.
+
+Prikaz je zato zamijenjen pogledom koji koristi isti mehanizam kao samostalan
+alat `CalibrateProjector`: površina sanduka gledana ravno odozgor, uz tekuće
+prostorno očitanje iscrtano kao žuta ploha te otkriveni disk iscrtan plavom
+bojom na svojem izmjerenom položaju, nagibu i polumjeru, dok ga alat za
+prepoznavanje uistinu prati. Bijeli križić i dalje označava samo mjesto na koje
+treba postaviti cilj i ne mijenja boju, jer sada tu ulogu — dojavu da je cilj
+prepoznat — preuzima sam prikaz diska. Za ovakvo iscrtavanje pokazalo se
+potrebnim isključiti odbacivanje stražnjih strana mreže (*culling*): disk je
+okrenut prema kameri, a rotacija koja ga tako postavlja (`rotateFromTo`)
+zaokreće ga za 180 stupnjeva i pri tome preokreće smjer obilaska njegovih
+vrhova.
+
+Sam postupak prepoznavanja pokazao se ovisnim o položaju cilja: alat za
+prepoznavanje razdvaja objekte isključivo prema skokovima u dubini, pa se cilj
+postavljen blizu pijeska ili iznad humka spajao s okolnom površinom i ne bi
+prošao provjeru oblika. Rješenje je snimiti pozadinsku sliku neporemećene
+površine na početku umjeravanja i ukloniti je za njegovo trajanje, na isti
+način na koji to već čini samostalan alat `CalibrateProjector`; snimke bez
+pozadine pri tome se izostavljaju iz povijesti mjerenja nadmorske visine
+korištene za filtriranje dubinske slike.
+
+Dodatno je uveden i uvjet da se skup od 12 prihvaćenih točaka odbija u
+potpunosti ako se njihove visine razlikuju za manje od 10 cm. Projekcijska
+kamera matematički se ne može odrediti iz skupa točaka koje sve leže približno
+u jednoj ravnini: prilagodba će i tada proći kroz svaku točku i prijaviti
+zadovoljavajući rezidual, dok je dobivena matrica pogrešna na svim ostalim
+položajima. Prethodna se datoteka umjeravanja čuva s nastavkom `.bak`, pa
+neuspješan pokušaj ne uništava prethodno vrijedeće umjeravanje.
+
+## D.2. Automatska primjena umjeravanja i automatski nastavak rada
+
+Zadane postavke prikaza već su pri pokretanju učitavale spremljenu datoteku
+`ProjectorMatrix.dat` i provjeravale je li ispravna, ali projekcija s
+gledišta projektora (`fixProjectorView`) ostajala je isključena sve dok je
+korisnik ne uključi ručno prekidačem `-fpv` ili u upravljačkoj ploči. Svako
+ponovno pokretanje tako je prešutno vraćalo slobodan pregled prostora čak i
+kada je na disku postojalo ispravno umjeravanje. To se sada primjenjuje
+automatski čim je datoteka valjana; ručni prekidač u upravljačkoj ploči
+ostaje kao izlaz u slučaju kada je umjeravanje na disku loše.
+
+Domena simulacije vode određena je jednom, pri pokretanju, iz kutova
+temeljne ravnine, a i drugi dijelovi sustava — poput fabrike alata koja
+sprema pokazivač na vodenu površinu i njezine dimenzije — pretpostavljaju
+da se ta domena tijekom rada procesa ne mijenja. Zbog toga ponovno mjerenje
+sanduka ranije nije moglo odmah stupiti na snagu, unatoč postojećoj obavijesti
+da se primjenjuje bez ponovnog pokretanja: uistinu se ažurirao samo obrub
+sanduka, dok je preostatak sustava ostajao vezan uz staru domenu.
+
+Umjesto ručnog rastavljanja isključivo vodene površine, sustav sada sam
+zahtijeva vlastito zaustavljanje (`Vrui::shutdown()`) čim se nova datoteka
+razmještaja zapiše, čeka da se proces uredno raspusti kroz svoj uobičajeni
+put — kamera se zaustavlja, dretve se spajaju, svaki član razred se uništava
+— i tada se, iz postupka koji se izvodi pri izlasku iz programa (`atexit`),
+ponovno pokreće ista izvedbena datoteka s istim argumentima, pročitanima iz
+`/proc/self/exe` i `/proc/self/cmdline` umjesto iz izvornih `argc`/`argv`, jer
+Vruijev konstruktor aplikacije do tog trenutka može već izmijeniti vlastite
+argumente.
+
+## D.3. Postojanost postavki koje se mijenjaju tijekom rada
+
+Svaki klizač na karticama za vodu i topografiju šalje svoju vrijednost sustavu
+tijekom rada, ali je pri ponovnom otvaranju ili ponovnom pokretanju upravljačke
+ploče prikazivao samo unaprijed određenu zadanu vrijednost ugrađenu u QML — pa
+je zatvaranje i ponovno otvaranje ploče prešutno vraćalo brzinu vode, razmak i
+debljinu izohipsi, jačinu reljefa i smjer svjetla na te zadane vrijednosti, bez
+ikakve dojave osim promijenjenog ponašanja samog sustava.
+
+QtCoreov tip `Settings` u QML-u (dostupan od Qt 6.5) rješava to izravno:
+vrijednost klizača veže se na svojstvo tipa `Settings`, koje tako istodobno
+služi kao zadana vrijednost pri prikazu i kao trajno spremljena vrijednost.
+Klizači zapisuju natrag pri otpuštanju, a sve spremljene vrijednosti se
+ponovno šalju čim se veza uspostavi, pa svježe pokrenut sustav preuzima
+posljednje postavljene vrijednosti umjesto vlastitih ugrađenih zadanih
+vrijednosti. Budući da CI okruženje koristi sustavski Qt 6.4, u kojem tip
+`Settings` nije dostupan, upravljačka ploča umjesto njega koristi
+`Qt.labs.settings`, istog ponašanja, dostupan još od Qt 5.
+
+Sam sustav SARndbox, pokrenut samostalno bez upravljačke ploče (primjerice s
+radne površine ili u kiosk načinu), i dalje se prije ovoga oslanjao isključivo
+na ugrađene vrijednosti ili one iz `SARndbox.cfg`, bez obzira na to što je
+posljednje bilo postavljeno. Uvedena je funkcija `saveConfigSetting()`, koja
+se poziva iz svake naredbe upravljačkog kanala koja postavlja vrijednost koja
+se mijenja tijekom rada (`waterSpeed`, `waterMaxSteps`, `waterAttenuation`,
+`contourLineSpacing`, `contourLineWidth`, `reliefStrength`, `sunDirection`, a
+naknadno i `heightMapPlane` za razinu mora), i koja se čita natrag pri
+pokretanju, povrh vrijednosti iz `SARndbox.cfg`. Vrijednosti se zapisuju u
+novu datoteku `LiveSettings.cfg`, a ne natrag u `SARndbox.cfg`: potonja
+datoteka sadrži ručno napisana obrazloženja uz nekoliko postavki, a
+`ConfigurationFile::saveAs()` pri ponovnom zapisu vjerno prenosi parove
+oznaka/vrijednost, ali pri tome gubi sve komentare, pa bi izmjena jednog
+klizača prešutno obrisala cjelokupno obrazloženje. Datoteka
+`LiveSettings.cfg` nije verzionirana, na isti način kao i ostale datoteke koje
+sustav zapisuje tijekom rada.
+
+## D.4. Ispuštanje vode na zahtjev
+
+Postavljanje razine vode (`WaterTable2::setWaterLevel`) izvodi se kroz
+sjenčane prolaze i zahtijeva OpenGL kontekst, koji dretva koja čita
+upravljački kanal nema na raspolaganju. Zahtjev za ispuštanjem vode zato se
+odgađa do sljedećeg poziva `display()`, na isti način na koji se već odgađaju
+postojeći zahtjevi za očitavanjem mreža. Izvodi se poslije osvježavanja
+batimetrije, a ne prije: `setWaterLevel` prilagođava zadanu razinu trenutačnom
+obliku terena, pa bi ispuštanje nad zastarjelom batimetrijom ostavilo ravnu
+lokvu posvuda gdje pijesak leži iznad najniže moguće razine vodene površine,
+umjesto da posvuda uistinu bude suho.
+
+## D.5. Zaključak dodatka
+
+Izmjene opisane u ovom dodatku odnose se na razmak između onoga što sustav
+tehnički radi i onoga što korisnik pritom stvarno vidi i pamti. Umjeravanje je
+prijavljivalo uspjeh dok je oznaka cilja bila projicirana u pogrešan prostor;
+ponovno mjerenje sanduka prijavljivalo je trenutačnu primjenu dok je stvarna
+domena simulacije ostajala nepromijenjena; a klizači su prikazivali proizvoljne
+zadane vrijednosti umjesto onoga što je korisnik posljednje postavio. U sva tri
+slučaja sustav se ponašao dosljedno prema vlastitom, pogrešnom shvaćanju
+stanja — što je i razlog zašto se takve pogreške ne očituju kao pad programa,
+nego kao ustrajno, neprimjetno pogrešno ponašanje.
