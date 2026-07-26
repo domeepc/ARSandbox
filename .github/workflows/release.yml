@@ -62,6 +62,7 @@ jobs:
             fonts-freefont-ttf \
             qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript \
             ruby ruby-dev rubygems
           sudo gem install --no-document fpm
 
@@ -85,7 +86,7 @@ jobs:
             --depends libgl1 --depends libglu1-mesa --depends fonts-freefont-ttf \
             --depends libqt6quick6 --depends libqt6qml6 --depends qml6-module-qtquick \
             --depends qml6-module-qtquick-controls --depends qml6-module-qtquick-layouts \
-            --depends qml6-module-qtquick-window \
+            --depends qml6-module-qtquick-window --depends qml6-module-qtqml-workerscript \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
 
