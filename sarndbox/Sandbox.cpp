@@ -177,8 +177,13 @@ Sandbox::RenderSettings::RenderSettings(void)
 	 renderWaterSurface(false),waterOpacity(2.0f),
 	 surfaceRenderer(0),waterRenderer(0)
 	{
-	/* Load the default projector transformation: */
+	/* Load the default projector transformation and render from it right away if
+	   it loaded, same as finishProjectorCalibration() does after a fresh
+	   calibration -- a prior calibration should not need "-fpv" repeated on every
+	   launch to actually take effect. -wi/-fpv on the command line and the
+	   "Projector view" toggle can still override this either way. */
 	loadProjectorTransform(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
+	fixProjectorView=projectorTransformValid;
 	}
 
 Sandbox::RenderSettings::RenderSettings(const Sandbox::RenderSettings& source)
