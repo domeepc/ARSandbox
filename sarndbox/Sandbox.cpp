@@ -1503,6 +1503,13 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	Plane heightMapPlane;
 	if(haveHeightMapPlane)
 		heightMapPlane=cfg.retrieveValue<Plane>("./heightMapPlane");
+	if(liveCfg.hasTag("./heightMapPlane"))
+		{
+		/* The sea level slider's last value, on top of whichever of the above the
+		   panel was showing when it was set: */
+		heightMapPlane=liveCfg.retrieveValue<Plane>("./heightMapPlane");
+		haveHeightMapPlane=true;
+		}
 	unsigned int numAveragingSlots=cfg.retrieveValue<unsigned int>("./numAveragingSlots",30);
 	unsigned int minNumSamples=cfg.retrieveValue<unsigned int>("./minNumSamples",10);
 	unsigned int maxVariance=cfg.retrieveValue<unsigned int>("./maxVariance",2);
@@ -2330,6 +2337,7 @@ void Sandbox::frame(void)
 						for(std::vector<RenderSettings>::iterator rsIt=renderSettings.begin();rsIt!=renderSettings.end();++rsIt)
 							if(rsIt->elevationColorMap!=0)
 								rsIt->elevationColorMap->calcTexturePlane(heightMapPlane);
+						saveConfigSetting("./heightMapPlane",heightMapPlane);
 						}
 					else
 						std::cerr<<"Wrong number of arguments for heightMapPlane control pipe command"<<std::endl;
