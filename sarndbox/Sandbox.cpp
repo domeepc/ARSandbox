@@ -264,6 +264,64 @@ void Sandbox::RenderSettings::loadHeightMap(const char* heightMapName)
 Methods of class Sandbox:
 ************************/
 
+namespace {
+
+/* Set by writeSandboxLayout() and consumed by restartIfRequested(), which is
+   registered with atexit() so it runs after Sandbox's destructor already has
+   -- camera closed, threads stopped -- making it safe to replace the process
+   image. A plain flag rather than calling execv() directly from
+   writeSandboxLayout(): the water table (and everything sized from it, like
+   the tool factories that cache its pointer and grid dimensions at startup)
+   can only safely pick up a new domain by being rebuilt from scratch, and the
+   normal Vrui::shutdown()/app-object-destruction path is what already does
+   that cleanly, once, for every member -- duplicating it by hand here would
+   be the same list of teardown steps going stale independently. */
+bool restartRequested=false;
+
+void restartIfRequested(void)
+	{
+	if(!restartRequested)
+		return;
+
+	/* Read the running binary's path and original arguments from /proc rather
+	   than anything captured earlier: Vrui::Application's constructor may have
+	   already stripped its own arguments from the argc/argv Sandbox was given. */
+	char exePath[4096];
+	ssize_t exeLen=readlink("/proc/self/exe",exePath,sizeof(exePath)-1);
+	if(exeLen<0)
+		{
+		std::cerr<<"Unable to restart: readlink(/proc/self/exe) failed: "<<strerror(errno)<<std::endl;
+		return;
+		}
+	exePath[exeLen]='\0';
+
+	std::ifstream cmdlineFile("/proc/self/cmdline",std::ios::binary);
+	std::string cmdline((std::istreambuf_iterator<char>(cmdlineFile)),std::istreambuf_iterator<char>());
+
+	std::vector<std::string> argStrings;
+	std::string::size_type start=0;
+	while(start<cmdline.size())
+		{
+		std::string::size_type end=cmdline.find('\0',start);
+		if(end==std::string::npos)
+			end=cmdline.size();
+		argStrings.push_back(cmdline.substr(start,end-start));
+		start=end+1;
+		}
+
+	std::vector<char*> execArgs;
+	for(std::string& a:argStrings)
+		execArgs.push_back(&a[0]);
+	execArgs.push_back(0);
+
+	execv(exePath,execArgs.data());
+
+	/* Only reached if execv itself failed to start: */
+	std::cerr<<"Unable to restart: execv failed: "<<strerror(errno)<<std::endl;
+	}
+
+}
+
 void Sandbox::rawDepthFrameDispatcher(const Kinect::FrameBuffer& frameBuffer)
 	{
 	/* Feed the calibration target extractor, which needs raw depth rather than
@@ -743,7 +801,14 @@ void Sandbox::writeSandboxLayout(void)
 	done<<"layoutWritten "<<Geometry::dist(corners[0],corners[1])<<" "
 	    <<Geometry::dist(corners[0],corners[2]);
 	sendEvent(done.str().c_str());
-	std::cout<<"Sandbox layout written; restart to resize the water simulation domain"<<std::endl;
+	std::cout<<"Sandbox layout written; restarting to resize the water simulation domain"<<std::endl;
+
+	/* The water table's domain is fixed at construction, so picking up the new
+	   layout means rebuilding the process, not just this object. Ask Vrui's main
+	   loop to stop; restartIfRequested() actually re-execs once run() returns and
+	   ~Sandbox() has cleanly torn everything down. */
+	restartRequested=true;
+	Vrui::shutdown();
 	}
 
 #if !KINECT_CONFIG_USE_SHADERPROJECTOR
@@ -1364,6 +1429,10 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
 	{
+	/* Runs restartIfRequested() after this object is fully destroyed, whether
+	   run() returns normally or an exception unwinds past it: */
+	atexit(restartIfRequested);
+
 	/* Read the sandbox's default configuration parameters: */
 	std::string sandboxConfigFileName=CONFIG_CONFIGDIR;
 	sandboxConfigFileName.push_back('/');
