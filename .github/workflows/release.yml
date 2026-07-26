@@ -67,6 +67,24 @@ jobs:
             ruby ruby-dev rubygems
           sudo gem install --no-document fpm
 
+      - name: Determine toolchain version for cache key
+        id: toolchain
+        run: echo "gcc=$(g++ -dumpversion)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Vrui/Kinect build
+        # Vrui and Kinect are pinned external toolkits (see packaging/build.sh)
+        # that take most of this job's time to compile from source and rarely
+        # change. Caching the built source tree (not just the tarballs) skips
+        # recompiling them entirely when nothing relevant changed. Keyed on the
+        # compiler version too, not just the OS label: a runner image update
+        # can bump the system GCC under the same "ubuntu-24.04" name, and a
+        # stale cache built with a different compiler would go unnoticed
+        # instead of failing loudly.
+        uses: actions/cache@v4
+        with:
+          path: stageroot.src
+          key: vrui-kinect-${{ runner.os }}-gcc${{ steps.toolchain.outputs.gcc }}-${{ hashFiles('packaging/build.sh') }}
+
       - name: Build and stage
         run: STAGEROOT="$PWD/stageroot" bash packaging/build.sh
 
@@ -142,6 +160,16 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel \
             ruby ruby-devel rubygems
           gem install --no-document fpm
+
+      - name: Determine toolchain version for cache key
+        id: toolchain
+        run: echo "gcc=$(g++ -dumpversion)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Vrui/Kinect build
+        uses: actions/cache@v4
+        with:
+          path: stageroot.src
+          key: vrui-kinect-${{ runner.os }}-gcc${{ steps.toolchain.outputs.gcc }}-${{ hashFiles('packaging/build.sh') }}
 
       - name: Build and stage
         run: STAGEROOT="$PWD/stageroot" bash packaging/build.sh
