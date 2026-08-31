@@ -16,11 +16,24 @@ restarted independently of the other.
 #include <QDir>
 #include <QUrl>
 
+#include <csignal>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 #include "pipe.h"
 #include "calibration.h"
 
 int main(int argc,char* argv[])
 	{
+	/* Writing to the command FIFO after the sandbox has exited raises SIGPIPE,
+	   whose default disposition kills this process outright -- so quitting the
+	   sandbox and then touching any control killed the panel instead of just
+	   failing that one command. The sandbox ignores SIGPIPE in its own startup
+	   for the same reason. With it ignored, write() returns EPIPE and Pipe::send
+	   can do what it already intends: drop the descriptor and reconnect. */
+	signal(SIGPIPE,SIG_IGN);
+
 	QGuiApplication app(argc,argv);
 	app.setApplicationName("SARndbox Control Panel");
 	/* QSettings (behind QML's Settings type, used to persist slider positions)
@@ -111,6 +124,31 @@ int main(int argc,char* argv[])
 		if(engine.rootObjects().isEmpty())
 			return -1;
 		return app.exec();
+		}
+
+	/* One panel per pipe, enforced here rather than by the callers. Readers of a
+	   FIFO compete for its bytes rather than each seeing a copy, so a second
+	   panel on the same pipe steals roughly half the sandbox's status lines from
+	   the first: both then sit out the 2.5 s silence timeout at random and flap
+	   between Connected and Waiting, which disables every control bound to
+	   pipe.connected. They accumulate easily -- run-sandbox.sh starts a panel on
+	   every launch, the sandbox's right-click menu forks one whenever it thinks
+	   none is listening, and a panel outlives the sandbox it was started with
+	   while showing no window until asked -- so an invisible leftover from an
+	   earlier session is the normal way this happens.
+	   The lock is released by the kernel when this process exits, so lockFd is
+	   deliberately left open for the lifetime of the program. O_CLOEXEC keeps the
+	   helpers started with QProcess (RawKinectViewer and friends) from holding
+	   the lock after the panel is gone. If the lock file cannot be opened at all,
+	   carry on unguarded rather than refusing to start. */
+	const QString lockPath=parser.value(pipeOption)+".lock";
+	const int lockFd=::open(lockPath.toLocal8Bit().constData(),O_RDWR|O_CREAT|O_CLOEXEC,0666);
+	if(lockFd>=0&&::flock(lockFd,LOCK_EX|LOCK_NB)<0)
+		{
+		/* A panel is already listening on this pipe. It answers the sandbox's
+		   showPanel event, so exiting quietly leaves the user with a working
+		   panel rather than two half-fed ones. */
+		return 0;
 		}
 
 	Pipe pipe(parser.value(pipeOption));

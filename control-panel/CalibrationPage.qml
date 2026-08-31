@@ -37,6 +37,44 @@ Item {
     // Projector calibration progress, driven by the sandbox's status messages.
     property bool capturing: false
     property string projectorState: ""
+    // Whether projectorState is reporting a problem rather than progress, so it
+    // can be shown as one instead of reading like a status line.
+    property bool projectorFailed: false
+
+    // Turns a "calibrationFailed projector <reason> [detail...]" message into
+    // something that says what to do about it. Every reason the sandbox can send
+    // is listed; an unrecognised one still shows its raw text rather than being
+    // swallowed, so a newer sandbox against an older panel degrades to something
+    // the user can at least report.
+    function projectorFailureText(f) {
+        var reason = f[0]
+        if (reason === "flatCapture")
+            return "failed: every target was at nearly the same height (" +
+                   parseFloat(f[1]).toFixed(1) + " cm apart). The solve needs real " +
+                   "depth variation — hold the disk at clearly different heights " +
+                   "above the sand, not all resting on it."
+        if (reason === "inconsistentWeights")
+            return "failed: the captured points do not describe one projector. " +
+                   "Usually at least one capture locked onto something other than " +
+                   "the disk — a hand, or the box rim. Capture again, keeping your " +
+                   "hands out of view when you press capture."
+        if (reason === "noExtractor")
+            return "failed: the depth camera has no intrinsic calibration, so the " +
+                   "target cannot be located. Run the camera calibration first."
+        if (reason === "writeError")
+            return "failed: could not write ProjectorMatrix.dat. Check that the " +
+                   "sandbox's etc/SARndbox-2.8 directory is writable."
+        if (reason === "badSize")
+            return "failed: no usable projector size (" + f.slice(1).join(" ") +
+                   "). Pick the projector in the list below before starting."
+        if (reason === "notRunning")
+            return "failed: no calibration is running. Press Start, then capture " +
+                   "each point as the crosshair moves."
+        if (reason === "badCommand")
+            return "failed: the sandbox rejected the command. The panel and the " +
+                   "sandbox are probably different versions."
+        return "failed: " + f.join(" ")
+    }
     property bool capturingCorners: false
     property string cornerState: ""
     property bool projectorView: false
@@ -79,17 +117,38 @@ Item {
 
             if (key === "calibrationStarted") {
                 dialog.capturing = true
+                dialog.projectorFailed = false
                 dialog.projectorState = "point 1 of " + f[1]
             } else if (key === "calibrationProgress") {
+                // Also latches capturing on, not just the point number: this is
+                // the only message a panel that started or reconnected part-way
+                // through a calibration receives, and without it the page keeps
+                // offering Start for a calibration the sandbox is already
+                // running, with no Capture button to advance it.
+                dialog.capturing = true
                 dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2]
             } else if (key === "calibrationNoTarget") {
                 dialog.projectorState = "target not visible — place the disk on the crosshair"
             } else if (key === "calibrationDone") {
                 dialog.capturing = false
-                dialog.projectorState = "done, residual " + parseFloat(f[1]).toFixed(1) + " px"
+                // f[2] is "ok" or "poor" - the sandbox judges the residual against
+                // the projector's own size, which it knows and this page does not.
+                dialog.projectorFailed = (f[2] === "poor")
+                dialog.projectorState = dialog.projectorFailed
+                    ? "written, but the fit is bad (residual " + parseFloat(f[1]).toFixed(1) +
+                      " px). Check the projector resolution above matches what is actually " +
+                      "being projected, then capture again."
+                    : "done, residual " + parseFloat(f[1]).toFixed(1) + " px"
                 calibration.refresh()
+            } else if (key === "calibrationFailed") {
+                // The reason used to be dropped on the floor here, which is what
+                // made a failed calibration look like the button doing nothing.
+                dialog.capturing = false
+                dialog.projectorFailed = true
+                dialog.projectorState = dialog.projectorFailureText(f.slice(1))
             } else {
                 dialog.capturing = false
+                dialog.projectorFailed = false
                 dialog.projectorState = ""
             }
         }
@@ -231,15 +290,28 @@ Item {
                             : (calibration.projectorDone
                                ? "measured " + calibration.projectorDate
                                : "not measured — sandbox falls back to the default projection")
+                    alert: dialog.projectorFailed
                     done: calibration.projectorDone
                     action: dialog.capturing ? "Abort" : "Start"
                     onTriggered: {
-                        if (dialog.capturing)
+                        if (dialog.capturing) {
                             pipe.send("calibrateProjector abort")
-                        else
-                            pipe.send("calibrateProjector start " +
-                                      calibration.screens[screenBox.currentIndex].width + " " +
-                                      calibration.screens[screenBox.currentIndex].height + " 12")
+                            return
+                        }
+                        // Guarded rather than indexed straight into: with no
+                        // screen selected this threw a TypeError, which QML
+                        // reports only on the console and which aborts the
+                        // handler before anything is sent -- so the button
+                        // genuinely did nothing, with no way to tell from here.
+                        var screen = calibration.screens[screenBox.currentIndex]
+                        if (!screen || !screen.width || !screen.height) {
+                            dialog.projectorFailed = true
+                            dialog.projectorState = "failed: no projector selected. " +
+                                "Pick the display the sandbox is projecting onto in the list below."
+                            return
+                        }
+                        pipe.send("calibrateProjector start " +
+                                  screen.width + " " + screen.height + " 12")
                     }
                 }
 

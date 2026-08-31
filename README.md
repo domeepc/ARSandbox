@@ -199,6 +199,9 @@ Every calibration file the sandbox writes is also copied to `config/`
 (`calibrationMirrorDir` in `SARndbox.cfg`), so the tracked copy cannot fall
 behind the one the running binary reads.
 
+Every configuration and calibration file either program touches, where it lives
+and which of them get written back: [docs/configuration.md](docs/configuration.md).
+
 ---
 
 ## Changes to SARndbox

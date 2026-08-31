@@ -469,7 +469,7 @@ void Sandbox::sendStatus(void)
 	   otherwise blocks until a reader appears, which would freeze the sandbox. */
 	if(statusPipeFd<0)
 		{
-		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK);
+		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK|O_CLOEXEC);
 		if(statusPipeFd<0)
 			return;
 		}
@@ -855,21 +855,90 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 
 #endif
 
+bool Sandbox::isOverSandbox(const Point& p) const
+	{
+	/* Same-sign test against the four edges of the measured footprint, which is
+	   convex. Taking the sign from the quad's own centroid rather than from the
+	   base plane's normal keeps this independent of which way that normal
+	   happens to point, so it cannot silently invert into rejecting everything
+	   inside the box and accepting everything outside it.
+	   The margin is generous: a target held at the very edge of the sand still
+	   has to count, and BoxLayout.txt is measured by hand. It only has to be
+	   tight enough to exclude what is actually causing bad captures -- the box
+	   rim, the operator, and the far side of the room. */
+	const double marginCm=5.0;
+
+	Point centroid=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),
+	                             Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+
+	/* Corner order is the order they are measured and written in: bottom left,
+	   bottom right, upper left, upper right -- so the quad's cycle is 0,1,3,2. */
+	static const int cycle[4][2]={{0,1},{1,3},{3,2},{2,0}};
+	Vector normal=Geometry::cross(basePlaneCorners[1]-basePlaneCorners[0],
+	                              basePlaneCorners[2]-basePlaneCorners[0]);
+	if(normal.mag()<=0.0)
+		return true; // Degenerate layout: no usable footprint, so do not reject anything on its behalf
+	normal.normalize();
+
+	for(int i=0;i<4;++i)
+		{
+		const Point& a=basePlaneCorners[cycle[i][0]];
+		Vector edge=basePlaneCorners[cycle[i][1]]-a;
+		Vector inward=Geometry::cross(normal,edge);
+		if(inward.mag()<=0.0)
+			continue;
+		inward.normalize();
+		if(inward*(centroid-a)<0.0)
+			inward=-inward;
+		if(inward*(p-a)<-marginCm)
+			return false;
+		}
+
+	return true;
+	}
+
 void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
 	{
 	/* Called from the disk extractor's own thread, so the result is handed to the
-	   main thread through a triple buffer rather than touched directly. Every
-	   entry already passed the shape test; prefer the largest blob rather than
-	   discarding the frame when more than one appears, since a spurious patch of
-	   clutter is reliably smaller than the target the user is deliberately
-	   holding still. */
-	if(!disks.empty())
-		{
-		const Kinect::DiskExtractor::Disk* best=&disks.front();
-		for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin()+1;dIt!=disks.end();++dIt)
-			if(dIt->numPixels>best->numPixels)
-				best=&*dIt;
+	   main thread through a triple buffer rather than touched directly.
+	   Two filters before anything is accepted, both of which the tie point solver
+	   depends on and neither of which the shape test provides:
+	   - A non-finite centre poisons the whole least-squares system, and every
+	     later check still passes, so the calibration fails at the very end with
+	     mismatched projective weights rather than here. The standalone
+	     CalibrateProjector rejects these; this did not.
+	   - A blob outside the measured sandbox cannot be the target, whatever its
+	     shape. The box rim is the common one.
+	   Among what survives, the disk closest to the expected target radius wins,
+	   not the biggest blob. Biggest was actively wrong: the calibration blanks
+	   the sand out, so the largest foreground object is usually the forearm
+	   holding the target, and the shape gates are loose enough to let a piece of
+	   one through. */
+	const Kinect::DiskExtractor::Disk* best=0;
+	double bestRadiusError=0.0;
+	const double targetRadius=diskExtractor!=0?double(diskExtractor->getDiskRadius()):6.0;
 
+	for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin();dIt!=disks.end();++dIt)
+		{
+		bool finite=Math::isFinite(dIt->radius);
+		for(int i=0;i<3&&finite;++i)
+			finite=Math::isFinite(dIt->center[i]);
+		if(!finite)
+			continue;
+
+		if(!isOverSandbox(dIt->center))
+			continue;
+
+		const double radiusError=Math::abs(double(dIt->radius)-targetRadius);
+		if(best==0||radiusError<bestRadiusError)
+			{
+			best=&*dIt;
+			bestRadiusError=radiusError;
+			}
+		}
+
+	if(best!=0)
+		{
 		lastDisk.startNewValue()=*best;
 		lastDisk.postNewValue();
 		diskEverSeenThisCalibration=true;
@@ -905,13 +974,34 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	   because the panel never learned the first one succeeded - must not
 	   restart mid-stream: diskExtractor is already streaming to a live
 	   callback, and re-entering captureBackground()/startStreaming() on top
-	   of that is what was crashing the sandbox. */
+	   of that is what was crashing the sandbox.
+	   Returning silently was its own trap, though: a panel that restarts during
+	   a calibration comes back believing none is running, so it offers Start
+	   again, and every press is dropped here. The crosshair stays on the sand
+	   with no way to capture against it and no way to abort, for the rest of the
+	   sandbox's run - which is how a calibration ends with no ProjectorMatrix.dat
+	   written. Re-announce the calibration instead, so the panel picks up where
+	   this one actually is and can drive or abort it. */
 	if(calibratingProjector)
+		{
+		std::ostringstream resync;
+		resync<<"calibrationStarted projector "<<numTiePoints;
+		sendEvent(resync.str().c_str());
+		if(tiePointIndex>0)
+			{
+			std::ostringstream progress;
+			progress<<"calibrationProgress projector "<<tiePointIndex<<" "<<numTiePoints;
+			sendEvent(progress.str().c_str());
+			}
 		return;
+		}
 
 	if(diskExtractor==0)
 		{
 		sendEvent("calibrationFailed projector noExtractor");
+		std::cerr<<"Projector calibration cannot start: no calibration target extractor. "
+		         <<"The camera did not report intrinsic parameters, so it has not been calibrated "
+		         <<"with \"KinectUtil calibrate\"."<<std::endl;
 		return;
 		}
 
@@ -950,7 +1040,15 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 void Sandbox::captureTiePoint(void)
 	{
 	if(!calibratingProjector)
+		{
+		/* Reported rather than dropped: a capture arriving with no calibration
+		   running means the panel and the sandbox disagree about the state, and
+		   swallowing it is what makes a whole calibration look like it simply
+		   did nothing. */
+		sendEvent("calibrationFailed projector notRunning");
+		std::cerr<<"Ignoring capture request: no projector calibration is running"<<std::endl;
 		return;
+		}
 	if(!haveDisk)
 		{
 		sendEvent("calibrationNoTarget projector");
@@ -1076,6 +1174,10 @@ void Sandbox::finishProjectorCalibration(void)
 	if(numNegativeWeights!=0&&numNegativeWeights!=int(tiePoints.size()))
 		{
 		sendEvent("calibrationFailed projector inconsistentWeights");
+		std::cerr<<"Projector calibration rejected: "<<numNegativeWeights<<" of "<<tiePoints.size()
+		         <<" targets solved to the far side of the projector's plane, which cannot happen "
+		         <<"for a real capture. Usually one or more points locked onto something other "
+		         <<"than the disk -- a hand, or the box rim."<<std::endl;
 		return;
 		}
 	if(numNegativeWeights>0)
@@ -1165,10 +1267,33 @@ void Sandbox::finishProjectorCalibration(void)
 		rsIt->fixProjectorView=rsIt->projectorTransformValid;
 		}
 
+	/* A residual this large means the solve did not really fit the captures, even
+	   though every earlier check passed -- typically a projector size that is not
+	   the one being projected onto, so the crosshairs were never where the solver
+	   was told they were. Scaled off the image diagonal rather than a fixed pixel
+	   count so it means the same thing on any projector. The matrix is still
+	   written and taken into use: it may be poor rather than useless, the user
+	   can simply calibrate again, and silently discarding the only result of a
+	   twelve-point capture is worse than reporting it. */
+	const double diagonal=Math::sqrt(Math::sqr(double(projectorImageSize[0]))+Math::sqr(double(projectorImageSize[1])));
+	/* !(res<=limit) rather than res>limit so a non-finite residual counts as poor:
+	   every comparison against a NaN is false, so the plain form would wave one
+	   through as a good calibration. The negative-weight test above has the same
+	   blind spot -- NaN weights are never < 0, so a fully poisoned solve counts
+	   zero of them and reads as consistent. Rejecting non-finite disk centres in
+	   diskExtractionCallback is what stops that reaching here at all; this is the
+	   backstop. */
+	const bool poorFit=!(res<=diagonal*0.05);
+
 	std::ostringstream done;
-	done<<"calibrationDone projector "<<res;
+	done<<"calibrationDone projector "<<res<<(poorFit?" poor":" ok");
 	sendEvent(done.str().c_str());
-	std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
+	if(poorFit)
+		std::cerr<<"Projector calibration written, but RMS residual "<<res<<" pixels is too large to trust "
+		         <<"on a "<<projectorImageSize[0]<<"x"<<projectorImageSize[1]<<" projector. Check that this "
+		         <<"is the resolution actually being projected, then capture again."<<std::endl;
+	else
+		std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
 	}
 
 bool Sandbox::sendEvent(const char* event)
@@ -1179,7 +1304,7 @@ bool Sandbox::sendEvent(const char* event)
 	   nothing re-sends it later the way the periodic status line does. */
 	if(statusPipeFd<0)
 		{
-		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK);
+		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK|O_CLOEXEC);
 		if(statusPipeFd<0)
 			return false;
 		}
@@ -2090,8 +2215,13 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		mkfifo(controlPipeName.c_str(),0666);
 		mkfifo(statusPipeName.c_str(),0666);
 
-		/* Open the control pipe in non-blocking mode: */
-		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK);
+		/* Open the control pipe in non-blocking mode. O_CLOEXEC matters because
+		   showPanelCallback() forks and execs the control panel: without it that
+		   panel inherits this read end, so after the sandbox exits the command
+		   FIFO still has a reader and the panel's writes succeed into a pipe
+		   nobody drains -- commands vanish silently instead of reporting a lost
+		   connection. The same applies to the status pipe's write end below. */
+		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK|O_CLOEXEC);
 		if(controlPipeFd<0)
 			std::cerr<<"Unable to open control pipe "<<controlPipeName<<"; ignoring"<<std::endl;
 
@@ -2445,10 +2575,23 @@ void Sandbox::frame(void)
 						if(w>0&&h>0)
 							startProjectorCalibration(w,h,n);
 						else
-							std::cerr<<"Invalid projector size for calibrateProjector control pipe command"<<std::endl;
+							{
+							/* Told to the panel too, not just the terminal: this is
+							   what a Start press with no projector selected looks
+							   like, and from the panel it was indistinguishable
+							   from the button doing nothing at all. */
+							std::ostringstream badSize;
+							badSize<<"calibrationFailed projector badSize "<<tokens[2]<<" "<<tokens[3];
+							sendEvent(badSize.str().c_str());
+							std::cerr<<"Invalid projector size \""<<tokens[2]<<" "<<tokens[3]
+							         <<"\" for calibrateProjector control pipe command"<<std::endl;
+							}
 						}
 					else
+						{
+						sendEvent("calibrationFailed projector badCommand");
 						std::cerr<<"Usage: calibrateProjector start <width> <height> [points] | capture | abort"<<std::endl;
+						}
 					}
 				else if(isToken(tokens[0],"grabDepth"))
 					{

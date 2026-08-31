@@ -313,6 +313,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
 	void facadeMeshCallback(const Kinect::MeshBuffer& meshBuffer); // Wakes the main thread when the facade has a new mesh
 	#endif
+	bool isOverSandbox(const Point& p) const; // Returns whether a camera-space point lies over the measured sandbox footprint
 	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target
 	void startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount); // Begins a projector calibration
 	void captureTiePoint(void); // Records the currently visible disk against the current target
