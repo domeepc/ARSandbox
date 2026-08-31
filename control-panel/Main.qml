@@ -7,22 +7,34 @@ import QtQuick.Layouts 1.3
 // one panel to find on the desk.
 ApplicationWindow {
     id: root
-    visible: true
+    // Starts hidden: the process is launched alongside the sandbox so it's
+    // already listening on the pipe, but the window itself should only
+    // appear once the sandbox's right-click menu asks for it (reveal() below
+    // calls show() itself), not the moment this process starts.
+    visible: false
     width: 620
     height: 900
     title: "SARndbox Control Panel"
 
-    // White text throughout. Set on the window so it propagates to every page
-    // rather than being repeated on each label. Done imperatively and guarded
-    // rather than as a plain property assignment: the `palette` grouped
-    // property needs Qt 5.14+, and a direct `palette.windowText: ...` binding
-    // is a hard QML load error on Ubuntu 18.04's Qt 5.9. This still gets the
-    // white text everywhere `palette` exists; on Qt 5.9 the app just runs
-    // with that Qt's default (unstyled) text colour instead of crashing.
+    // Dark background with white text throughout, set on the window so it
+    // propagates to every page rather than being repeated on each label. Both
+    // roles are forced explicitly rather than just the text colour: leaving
+    // the background at its Qt default meant this only looked right on a
+    // desktop that already happened to use a dark theme, and came out as
+    // near-invisible white-on-light-grey on a default light one. Done
+    // imperatively and guarded rather than as a plain property assignment:
+    // the `palette` grouped property needs Qt 5.14+, and a direct
+    // `palette.windowText: ...` binding is a hard QML load error on Ubuntu
+    // 18.04's Qt 5.9. This still gets the dark theme everywhere `palette`
+    // exists; on Qt 5.9 the app just runs with that Qt's default (unstyled)
+    // colours instead of crashing.
     Component.onCompleted: {
         try {
+            palette.window = "#0d1117"
             palette.windowText = "#ffffff"
+            palette.base = "#161b22"
             palette.text = "#ffffff"
+            palette.button = "#21262d"
             palette.buttonText = "#ffffff"
             palette.brightText = "#ffffff"
         } catch (e) {
