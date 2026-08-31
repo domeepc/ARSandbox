@@ -36,10 +36,15 @@ int main(int argc,char* argv[])
 	parser.addOption(pipeOption);
 	/* The panel reads the sandbox's own etc/ directory, so it has to look where
 	   the sandbox actually is: $SANDBOX_DIR if the launcher set it, otherwise
-	   the tree this binary was installed into (bin/sandbox-control -> ..). */
+	   the tree this binary was installed into (bin/sandbox-control -> ..).
+	   qEnvironmentVariable() would do this in one call, but needs Qt 5.10;
+	   qgetenv() has been there since Qt 4. */
+	QString sandboxDir=QString::fromLocal8Bit(qgetenv("SANDBOX_DIR"));
+	if(sandboxDir.isEmpty())
+		sandboxDir=QDir::cleanPath(app.applicationDirPath()+"/..");
 	QCommandLineOption dirOption(QStringList()<<"d"<<"sandbox-dir",
 		"Directory the sandbox was built in.",
-		"path",qEnvironmentVariable("SANDBOX_DIR",QDir::cleanPath(app.applicationDirPath()+"/..")));
+		"path",sandboxDir);
 	parser.addOption(dirOption);
 	QCommandLineOption errorOption("error",
 		"Show the given message in an error dialog and exit, instead of starting the panel normally. "
@@ -50,30 +55,54 @@ int main(int argc,char* argv[])
 
 	if(parser.isSet(errorOption))
 		{
-		/* Reuse QtQuick.Controls' own Dialog type instead of pulling in QtWidgets
+		/* Reuse QtQuick.Controls' own Popup type instead of pulling in QtWidgets
 		   for a single message box - it is already a working, already-packaged
-		   dependency of this app. */
+		   dependency of this app. Popup rather than Dialog: Dialog needs QQC2
+		   2.3 (Qt 5.10+), which Ubuntu 18.04's Qt 5.9 does not have. Popup
+		   itself goes back to QQC2's first version, but its own `anchors`
+		   convenience property is also 5.10+, so it is centred with plain x/y
+		   instead, which every version supports. */
 		QQmlApplicationEngine engine;
 		engine.rootContext()->setContextProperty("errorMessage",parser.value(errorOption));
 		engine.loadData(R"(
-			import QtQuick
-			import QtQuick.Controls
+			import QtQuick 2.9
+			import QtQuick.Controls 2.2
+			import QtQuick.Layouts 1.3
 
 			ApplicationWindow {
+				id: win
 				width: 400
 				height: 150
 				visible: true
 				title: "Augmented Reality Sandbox"
 
-				Dialog {
-					anchors.centerIn: parent
+				Popup {
+					x: (win.width - width) / 2
+					y: (win.height - height) / 2
 					modal: true
-					title: "Augmented Reality Sandbox"
-					standardButtons: Dialog.Ok
-					Label {
-						text: errorMessage
-						wrapMode: Text.WordWrap
+					closePolicy: Popup.CloseOnEscape
+
+					ColumnLayout {
+						width: parent.width
+						height: parent.height
+						spacing: 12
+						Label {
+							Layout.fillWidth: true
+							text: "Augmented Reality Sandbox"
+							font.bold: true
+						}
+						Label {
+							Layout.fillWidth: true
+							text: errorMessage
+							wrapMode: Text.WordWrap
+						}
+						Button {
+							Layout.alignment: Qt.AlignRight
+							text: "OK"
+							onClicked: close()
+						}
 					}
+
 					onClosed: Qt.quit()
 					Component.onCompleted: open()
 				}

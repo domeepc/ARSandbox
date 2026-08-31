@@ -901,6 +901,14 @@ Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 
 void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
 	{
+	/* A duplicate start while already calibrating - e.g. a second click sent
+	   because the panel never learned the first one succeeded - must not
+	   restart mid-stream: diskExtractor is already streaming to a live
+	   callback, and re-entering captureBackground()/startStreaming() on top
+	   of that is what was crashing the sandbox. */
+	if(calibratingProjector)
+		return;
+
 	if(diskExtractor==0)
 		{
 		sendEvent("calibrationFailed projector noExtractor");
@@ -1165,9 +1173,16 @@ void Sandbox::finishProjectorCalibration(void)
 
 bool Sandbox::sendEvent(const char* event)
 	{
-	/* Ask the panel to do something. Harmless if no panel is listening. */
+	/* Open lazily, exactly like sendStatus(): without this, a one-shot event
+	   sent while the descriptor happens to be closed (no panel connected yet,
+	   or a just-dropped connection) is lost silently and for good, since
+	   nothing re-sends it later the way the periodic status line does. */
 	if(statusPipeFd<0)
-		return false;
+		{
+		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK);
+		if(statusPipeFd<0)
+			return false;
+		}
 
 	const std::string line=std::string(event)+"\n";
 	if(write(statusPipeFd,line.data(),line.size())>=0)

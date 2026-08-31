@@ -1,6 +1,6 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.9
+import QtQuick.Controls 2.2
+import QtQuick.Layouts 1.3
 
 // Depth image view for measuring the sandbox, in two passes.
 //
@@ -34,7 +34,8 @@ ColumnLayout {
 
     Connections {
         target: pipe
-        function onStatus(key, value) {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onStatus: {
             var f = value.split(" ")
             if (key === "depthImage") {
                 picker.imageGeneration++

@@ -1,7 +1,7 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import Qt.labs.settings
+import QtQuick 2.9
+import QtQuick.Controls 2.2
+import QtQuick.Layouts 1.3
+import Qt.labs.settings 1.0
 
 // Calibration page. Grouped into the two physical devices being calibrated,
 // because a step's meaning depends on which one it belongs to.
@@ -27,7 +27,8 @@ Item {
 
     Connections {
         target: pipe
-        function onConnectedChanged() {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onConnectedChanged: {
             if (pipe.connected)
                 dialog.sendSeaLevel()
         }
@@ -42,7 +43,8 @@ Item {
 
     Connections {
         target: pipe
-        function onStatus(key, value) {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onStatus: {
             if (key === "projectorView") { dialog.projectorView = (value === "on"); return }
             if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
                 key !== "calibrationDone" && key !== "calibrationAborted" &&
@@ -102,85 +104,6 @@ Item {
         var n = calibration.planeNormal
         pipe.send("heightMapPlane " + n[0].toFixed(6) + " " + n[1].toFixed(6) + " " +
                   n[2].toFixed(6) + " " + (calibration.planeOffset + seaLevel).toFixed(4))
-    }
-
-    component Heading: Label {
-        Layout.fillWidth: true
-        Layout.topMargin: dialog.gap
-        font.pixelSize: 13
-        font.bold: true
-        font.capitalization: Font.AllUppercase
-        opacity: 0.85
-    }
-
-    component Note: Label {
-        Layout.fillWidth: true
-        wrapMode: Text.Wrap
-        font.pixelSize: 13
-        opacity: 0.85
-    }
-
-    component Step: RowLayout {
-        id: step
-        property string label
-        property string detail
-        property bool done: false
-        property string action: "Run"
-        signal triggered()
-
-        Layout.fillWidth: true
-        spacing: dialog.gap
-
-        Rectangle {
-            width: 12; height: 12; radius: 6
-            Layout.alignment: Qt.AlignVCenter
-            color: step.done ? "#3fb950" : "#8b949e"
-        }
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 0
-            Label { text: step.label; font.pixelSize: 15 }
-            Label {
-                text: step.detail
-                visible: step.detail !== ""
-                font.pixelSize: 12
-                font.family: "monospace"
-                opacity: 0.85
-            }
-        }
-        Button {
-            text: step.action
-            implicitHeight: dialog.touchTarget
-            onClicked: step.triggered()
-        }
-    }
-
-    // A measured value with a pass/fail marker, so a bad measurement is visible
-    // rather than having to be inferred from the sandbox looking wrong later.
-    component Check: RowLayout {
-        id: check
-        property string label
-        property string value
-        property bool ok: true
-        property string hint
-
-        Layout.fillWidth: true
-        spacing: dialog.gap
-
-        Label { text: check.label; font.pixelSize: 14; Layout.preferredWidth: 190 }
-        Label {
-            text: check.value
-            font.pixelSize: 14
-            font.family: "monospace"
-            Layout.preferredWidth: 130
-        }
-        Label {
-            text: check.ok ? "ok" : check.hint
-            font.pixelSize: 13
-            color: check.ok ? "#3fb950" : "#d29922"
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-        }
     }
 
     ScrollView {
