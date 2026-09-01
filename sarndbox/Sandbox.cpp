@@ -456,7 +456,12 @@ void Sandbox::showWaterControlDialogCallback(Misc::CallbackData* cbData)
 	Vrui::popupPrimaryWidget(waterControlDialog);
 	}
 
-void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
+/**
+	 * @brief Updates the water simulation speed from the slider value.
+	 *
+	 * @param cbData Callback data containing the selected water speed.
+	 */
+	void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
 	{
 	waterSpeed=cbData->value;
 	}
@@ -915,7 +920,10 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	}
 
 /**
-	 * @brief Publishes an unambiguous calibration disk candidate.
+	 * @brief Publishes the sole valid calibration disk candidate for the current frame.
+	 *
+	 * Candidates must have finite position and radius and lie within the sandbox
+	 * footprint. Frames with zero or multiple valid candidates are discarded.
 	 *
 	 * @param disks Detected disk candidates for the current depth frame.
 	 */
@@ -973,7 +981,13 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 		}
 	}
 
-Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
+/**
+	 * @brief Computes the projector-image position of a calibration tie point.
+	 *
+	 * @param index Zero-based tie-point index.
+	 * @return Projector-image coordinates for the tie point.
+	 */
+	Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 	{
 	/* Lay the targets out on a grid inset from the edges of the projected image.
 	   Targets right at the border would put the disk half off the sand, and a
@@ -1120,11 +1134,11 @@ Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 	}
 
 /**
-	 * @brief Records a disk observation for the active projector-calibration tie point.
+	 * @brief Records an accepted disk observation for the active projector-calibration tie point.
 	 *
-	 * Completed observation runs add each sample as a tie point and advance to the
-	 * next target or finish projector calibration. Incomplete runs remain active
-	 * until the required number of observations is collected.
+	 * Completed capture runs add all collected observations to the calibration and advance
+	 * to the next target or finish calibration. Capture runs remain active while additional
+	 * observations are expected.
 	 */
 	void Sandbox::collectTiePointSample(void)
 	{
