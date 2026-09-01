@@ -461,7 +461,14 @@ void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCal
 	waterSpeed=cbData->value;
 	}
 
-void Sandbox::sendStatus(void)
+/**
+	 * @brief Sends the current application status to the control panel.
+	 *
+	 * The status includes frame rate, terrain-update pause state, water settings,
+	 * and projector-view state. If the status pipe is unavailable, the update is
+	 * skipped and the connection is retried later.
+	 */
+	void Sandbox::sendStatus(void)
 	{
 	/* Connect lazily. The panel may be started and stopped any number of times
 	   while the sandbox runs, so a missing reader is a normal state and not an
@@ -855,7 +862,17 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 
 #endif
 
-bool Sandbox::isOverSandbox(const Point& p) const
+/**
+	 * @brief Determines whether a point lies within the measured sandbox footprint.
+	 *
+	 * Points within five centimeters of the footprint boundary are accepted. Degenerate
+	 * layouts accept all points.
+	 *
+	 * @param p Point to test.
+	 * @return `true` if the point is within the footprint or its boundary margin,
+	 *         `false` otherwise.
+	 */
+	bool Sandbox::isOverSandbox(const Point& p) const
 	{
 	/* Same-sign test against the four edges of the measured footprint, which is
 	   convex. Taking the sign from the quad's own centroid rather than from the
@@ -897,7 +914,12 @@ bool Sandbox::isOverSandbox(const Point& p) const
 	return true;
 	}
 
-void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
+/**
+	 * @brief Publishes an unambiguous calibration disk candidate.
+	 *
+	 * @param disks Detected disk candidates for the current depth frame.
+	 */
+	void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
 	{
 	/* Called from the disk extractor's own thread, so the result is handed to the
 	   main thread through a triple buffer rather than touched directly.
@@ -970,7 +992,19 @@ Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 	                                 insetY+spanY*(rows>1?double(row)/double(rows-1):0.5));
 	}
 
-void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
+/**
+	 * @brief Starts projector calibration or resynchronizes an active calibration.
+	 *
+	 * Initializes tie-point capture, prepares the depth stream, and announces the
+	 * calibration to connected control panels. If calibration is already active,
+	 * re-announces its state and current progress without restarting it.
+	 *
+	 * @param width Projector image width in pixels.
+	 * @param height Projector image height in pixels.
+	 * @param tiePointCount Requested number of calibration tie points; at least six
+	 *        are used.
+	 */
+	void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
 	{
 	/* A duplicate start while already calibrating - e.g. a second click sent
 	   because the panel never learned the first one succeeded - must not
@@ -1042,7 +1076,14 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	sendEvent(started.str().c_str());
 	}
 
-void Sandbox::captureTiePoint(void)
+/**
+	 * @brief Starts collecting observations for the current projector calibration target.
+	 *
+	 * Begins a timed multi-frame capture run when projector calibration is active and a
+	 * target disk is detected. The observations are committed as a tie point only after
+	 * the configured sample count is collected.
+	 */
+	void Sandbox::captureTiePoint(void)
 	{
 	if(!calibratingProjector)
 		{
@@ -1078,7 +1119,14 @@ void Sandbox::captureTiePoint(void)
 	sendEvent(capturing.str().c_str());
 	}
 
-void Sandbox::collectTiePointSample(void)
+/**
+	 * @brief Records a disk observation for the active projector-calibration tie point.
+	 *
+	 * Completed observation runs add each sample as a tie point and advance to the
+	 * next target or finish projector calibration. Incomplete runs remain active
+	 * until the required number of observations is collected.
+	 */
+	void Sandbox::collectTiePointSample(void)
 	{
 	/* One observation of the target currently being measured. Called from frame()
 	   for every extraction that produced exactly one plausible disk. */
@@ -1135,7 +1183,13 @@ void Sandbox::collectTiePointSample(void)
 		}
 	}
 
-void Sandbox::abandonTiePointRun(void)
+/**
+	 * @brief Abandons an incomplete projector tie-point capture.
+	 *
+	 * Reports whether the target was ambiguous or no longer detected, then clears
+	 * the pending observations and stops the capture.
+	 */
+	void Sandbox::abandonTiePointRun(void)
 	{
 	/* The run stalled: no usable extraction for a while. Say which of the two
 	   reasons it was, since they need opposite corrections -- show the target,
@@ -1164,7 +1218,13 @@ void Sandbox::abandonTiePointRun(void)
 	sendEvent(stalled.str().c_str());
 	}
 
-void Sandbox::restoreDepthStream(void)
+/**
+	 * @brief Restores the direct depth stream after projector calibration.
+	 *
+	 * Disables temporary background removal when the active camera is a direct
+	 * Kinect frame source.
+	 */
+	void Sandbox::restoreDepthStream(void)
 	{
 	/* Undo the background removal that startProjectorCalibration turned on: */
 	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
@@ -1172,7 +1232,10 @@ void Sandbox::restoreDepthStream(void)
 		directCamera->setRemoveBackground(false);
 	}
 
-void Sandbox::abortProjectorCalibration(void)
+/**
+	 * @brief Cancels the active projector calibration and restores normal depth processing.
+	 */
+	void Sandbox::abortProjectorCalibration(void)
 	{
 	if(!calibratingProjector)
 		return;
@@ -1185,7 +1248,15 @@ void Sandbox::abortProjectorCalibration(void)
 	sendEvent("calibrationAborted projector");
 	}
 
-void Sandbox::finishProjectorCalibration(void)
+/**
+	 * @brief Completes projector calibration and applies the resulting projection transform.
+	 *
+	 * Validates the captured tie points, computes the projector mapping, writes a backup
+	 * and updated calibration matrix, and reloads the transform for active render settings.
+	 * Reports calibration failures and fit quality through the control channel and diagnostic
+	 * output.
+	 */
+	void Sandbox::finishProjectorCalibration(void)
 	{
 	calibratingProjector=false;
 	capturingTiePoint=false;
@@ -1393,7 +1464,13 @@ void Sandbox::finishProjectorCalibration(void)
 		std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
 	}
 
-bool Sandbox::sendEvent(const char* event)
+/**
+	 * @brief Sends a one-line event through the status pipe.
+	 *
+	 * @param event Event text to send.
+	 * @return true if the event was written successfully, false if the pipe is unavailable or the write fails.
+	 */
+	bool Sandbox::sendEvent(const char* event)
 	{
 	/* Open lazily, exactly like sendStatus(): without this, a one-shot event
 	   sent while the descriptor happens to be closed (no panel connected yet,
@@ -1689,7 +1766,14 @@ void printUsage(void)
    than leaving the panel waiting. */
 const double Sandbox::captureRunTimeout=3.0;
 
-Sandbox::Sandbox(int& argc,char**& argv)
+/**
+	 * @brief Initializes the SARndbox application and its runtime resources.
+	 *
+	 * Loads configuration and command-line settings, initializes the selected depth
+	 * source and processing pipeline, sets up rendering, water simulation,
+	 * calibration, control pipes, and GUI components, and starts depth streaming.
+	 */
+	Sandbox::Sandbox(int& argc,char**& argv)
 	:Vrui::Application(argc,argv),
 	 remoteServer(0),
 	 camera(0),pixelDepthCorrection(0),
@@ -2448,7 +2532,14 @@ bool isToken(const std::string& token,const char* pattern)
 
 }
 
-void Sandbox::frame(void)
+/**
+	 * @brief Advances application state and processes pending input and calibration updates.
+	 *
+	 * Updates filtered depth and hand data, applies control-pipe commands, advances
+	 * calibration state, publishes status updates, and schedules continued updates
+	 * while frame processing is paused.
+	 */
+	void Sandbox::frame(void)
 	{
 	/* Call the remote server's frame method: */
 	if(remoteServer!=0)
