@@ -146,14 +146,18 @@ jobs:
   package-deb-qt5:
     name: Package (.deb, Qt 5)
     runs-on: ubuntu-22.04
-    # Ubuntu did not package Qt 6 until 22.04 (and only in universe, not
-    # main), so this job targets older Ubuntu/Debian releases that only ever
-    # had Qt 5 - see install.sh's own qt6-base-dev/qtbase5-dev fallback.
-    # GitHub retired its ubuntu-20.04 runner, so this still builds on
-    # ubuntu-22.04; only the Qt packages installed and linked against differ
-    # from package-deb, and the runtime --depends below name Ubuntu 22.04's
-    # (pre-t64) library packages to match what the binary is actually linked
-    # against.
+    # Ubuntu 22.04 packages Qt 6 only in universe, never in main, so this job
+    # builds the same app against Qt 5 - which is in main there - for anyone
+    # who would rather not pull the runtime in from universe. Only the Qt
+    # packages installed and linked against differ from package-deb, and the
+    # runtime --depends below name Ubuntu 22.04's (pre-t64) library packages
+    # to match what the binary is actually linked against.
+    #
+    # This targets 22.04 specifically, not "old Ubuntu in general": the .deb
+    # produced here needs 22.04's glibc and depends on libssl3, so it neither
+    # installs nor runs on 20.04, which has neither. GitHub retired the
+    # ubuntu-20.04 runner and nothing here builds for it; 20.04 users want
+    # install.sh, whose own qt6-base-dev/qtbase5-dev fallback covers them.
     steps:
       - uses: actions/checkout@v4
 
@@ -211,7 +215,7 @@ jobs:
           fpm -s dir -t deb -n arsandbox -v "$VERSION+qt5" \
             --maintainer "Domagoj Milardovic <domagoj.milardovic@gmail.com>" \
             --license GPL-2.0 --url https://github.com/${{ github.repository }} \
-            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu releases without Qt 6)" \
+            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu 22.04)" \
             --depends libudev1 --depends libdbus-1-3 --depends libusb-1.0-0 \
             --depends zlib1g --depends libssl3 --depends libpng16-16 \
             --depends libjpeg-turbo8 --depends libtiff5 --depends libasound2 \
@@ -317,22 +321,30 @@ jobs:
             release rather than vendored here.
 
             Prefer not to build locally? Download `arsandbox_<version>_amd64.deb`
-            (Debian/Ubuntu) or `arsandbox-<version>.x86_64.rpm` (Fedora)
-            instead. Each bundles the whole app — Vrui, the Kinect package, the
-            sandbox and the control panel — under `/opt/arsandbox`, with
-            `arsandbox` and `sandbox-control` on your PATH:
+            (Ubuntu 24.04 and newer) or `arsandbox-<version>.x86_64.rpm`
+            (Fedora 40 and newer) instead. Each bundles the whole app — Vrui,
+            the Kinect package, the sandbox and the control panel — under
+            `/opt/arsandbox`, with `arsandbox` and `sandbox-control` on your
+            PATH:
 
             ```bash
-            sudo apt install ./arsandbox_<version>_amd64.deb   # Debian/Ubuntu
-            sudo dnf install ./arsandbox-<version>.x86_64.rpm  # Fedora
+            sudo apt install ./arsandbox_<version>_amd64.deb   # Ubuntu 24.04+
+            sudo dnf install ./arsandbox-<version>.x86_64.rpm  # Fedora 40+
             ```
 
-            On Ubuntu releases without Qt 6 (e.g. 20.04), use the Qt 5 build
-            instead:
+            On Ubuntu 22.04, use the Qt 5 build instead. It is built on 22.04
+            and links against that release's libraries, and it needs only Qt 5
+            from main rather than Qt 6 from universe:
 
             ```bash
             sudo apt install ./arsandbox_<version>+qt5_amd64.deb
             ```
+
+            Every package above is built on the release it names and depends on
+            that release's library versions, so none of them install on
+            anything older. On earlier releases — Ubuntu 20.04 included — build
+            from source with `./install.sh`, which adapts to whichever Qt and
+            library versions your distribution actually ships.
 
             Like the rest of this workflow, the packages are built without a
             Kinect attached and are not hardware-tested in CI; if one doesn't
