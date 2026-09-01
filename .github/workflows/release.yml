@@ -145,53 +145,88 @@ jobs:
 
   package-deb-qt5:
     name: Package (.deb, Qt 5)
-    runs-on: ubuntu-22.04
-    # Ubuntu 22.04 packages Qt 6 only in universe, never in main, so this job
-    # builds the same app against Qt 5 - which is in main there - for anyone
-    # who would rather not pull the runtime in from universe. Only the Qt
-    # packages installed and linked against differ from package-deb, and the
-    # runtime --depends below name Ubuntu 22.04's (pre-t64) library packages
-    # to match what the binary is actually linked against.
+    runs-on: ubuntu-latest
+    # The Qt 5 build exists for Ubuntu releases too old for the Qt 6 package,
+    # so what matters is not which Qt it links but how old a system the result
+    # still runs on. A .deb only installs where its declared dependencies
+    # resolve AND its binaries' glibc symbol versions exist, and both are fixed
+    # by whatever the build ran on - so this builds on the OLDEST release we
+    # claim to support, Ubuntu 18.04, and the result then also installs on
+    # 20.04, which carries the same libssl1.1/libdc1394-22 names and a newer
+    # glibc. Building on 22.04 instead produced a package that needed
+    # GLIBC_2.34 and libssl3 and so installed on neither - the bug this
+    # arrangement exists to prevent.
     #
-    # This targets 22.04 specifically, not "old Ubuntu in general": the .deb
-    # produced here needs 22.04's glibc and depends on libssl3, so it neither
-    # installs nor runs on 20.04, which has neither. GitHub retired the
-    # ubuntu-20.04 runner and nothing here builds for it; 20.04 users want
-    # install.sh, whose own qt6-base-dev/qtbase5-dev fallback covers them.
+    # 22.04 is deliberately NOT in that range: it renamed libssl1.1 to libssl3
+    # and libdc1394-22 to libdc1394-25, so a bionic-built .deb cannot resolve
+    # there however new its glibc is. 22.04 and 24.04 users take package-deb's
+    # Qt 6 package or install.sh.
+    #
+    # The build runs in an ubuntu:18.04 Docker container rather than under this
+    # job's `container:` key, because with `container:` the runner executes the
+    # JavaScript actions (checkout, cache, upload-artifact) *inside* it too, and
+    # their Node 20 runtime needs glibc 2.28+ which 18.04 does not have. Those
+    # actions therefore stay on the host and only the compile steps go into the
+    # container. fpm likewise runs on the host: it just reads the staged tree,
+    # and 18.04's Ruby 2.5 is too old for current fpm.
+    #
+    # package-rpm can use `container:` directly because Fedora 40 is new enough
+    # to run Node 20; that is the only reason the two jobs differ in shape.
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Start the Ubuntu 18.04 build container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential g++ cmake ninja-build git wget \
+          # Mounted at the same path as on the host so that paths baked into
+          # the staging tree by build.sh mean the same thing on both sides.
+          docker run -d --name bionic -v "$PWD:$PWD" -w "$PWD" \
+            ubuntu:18.04 sleep infinity
+          docker exec bionic apt-get update
+          # Bionic predates two of the dev-package renames package-deb uses:
+          # libdc1394-dev was libdc1394-22-dev (install.sh carries the same
+          # fallback), and libfreetype-dev was libfreetype6-dev.
+          docker exec -e DEBIAN_FRONTEND=noninteractive bionic \
+            apt-get install -y build-essential g++ cmake ninja-build git wget \
             libudev-dev libdbus-1-dev libusb-1.0-0-dev zlib1g-dev libssl-dev \
             libpng-dev libjpeg-dev libtiff-dev libasound2-dev libspeex-dev libopenal-dev \
-            libv4l-dev libdc1394-dev libtheora-dev libbluetooth-dev libfreetype-dev \
+            libv4l-dev libdc1394-22-dev libtheora-dev libbluetooth-dev libfreetype6-dev \
             libxi-dev libxrandr-dev mesa-common-dev libgl1-mesa-dev libglu1-mesa-dev \
             fonts-freefont-ttf \
             qtbase5-dev qtdeclarative5-dev qml-module-qtquick2 \
             qml-module-qtquick-controls2 qml-module-qtquick-layouts qml-module-qtquick-window2 \
             qml-module-qtquick-templates2 qml-module-qt-labs-settings \
-            xvfb \
-            ruby ruby-dev rubygems
+            xvfb
+
+      - name: Install fpm on the host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev rubygems
           sudo gem install --no-document fpm
 
       - name: Determine toolchain version for cache key
         id: toolchain
-        run: echo "gcc=$(g++ -dumpversion)" >> "$GITHUB_OUTPUT"
+        # The container's compiler, not the host's: that is what builds this.
+        run: echo "gcc=$(docker exec bionic g++ -dumpversion)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Vrui/Kinect build
         uses: actions/cache@v4
         with:
           path: stageroot.src
-          key: vrui-kinect-${{ runner.os }}-gcc${{ steps.toolchain.outputs.gcc }}-${{ hashFiles('packaging/build.sh') }}
+          # Keyed on bionic rather than runner.os, so this never shares a cache
+          # entry with the host-built package-deb job.
+          key: vrui-kinect-bionic-gcc${{ steps.toolchain.outputs.gcc }}-${{ hashFiles('packaging/build.sh') }}
 
       - name: Build and stage
-        run: STAGEROOT="$PWD/stageroot" bash packaging/build.sh
+        run: |
+          docker exec -e STAGEROOT="$PWD/stageroot" bionic bash packaging/build.sh
+          # The container builds as root; hand the tree back to the runner user
+          # so fpm and the cache action can read and write it on the host. The
+          # .deb's own file ownership is unaffected - fpm sets root:root itself.
+          sudo chown -R "$(id -u):$(id -g)" stageroot stageroot.src
 
       - name: Smoke test the control panel
         run: |
+          docker exec bionic bash -c '
           test_mode() {
             xvfb-run -a stageroot/opt/arsandbox/bin/sandbox-control "$@" >smoke.log 2>&1 &
             PANEL_PID=$!
@@ -206,6 +241,22 @@ jobs:
           }
           test_mode --error smoke-test
           test_mode -p /tmp/smoke.pipe
+          '
+
+      - name: Verify the result actually runs on 18.04
+        # The failure this job exists to prevent is silent: a package that
+        # builds and smoke-tests fine but needs a glibc newer than the target's.
+        # Assert it directly against 18.04's 2.27 rather than trusting that the
+        # container was used everywhere it should have been.
+        run: |
+          MAXGLIBC=$(objdump -T stageroot/opt/arsandbox/bin/SARndbox |
+            grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Highest glibc symbol version required: $MAXGLIBC"
+          if [ "$(printf '%s\nGLIBC_2.27\n' "$MAXGLIBC" | sort -V | tail -1)" != "GLIBC_2.27" ]; then
+            echo "::error::SARndbox needs $MAXGLIBC but Ubuntu 18.04 has GLIBC_2.27;" \
+                 "the build did not run in the bionic container."
+            exit 1
+          fi
 
       - name: Package
         run: |
@@ -215,12 +266,12 @@ jobs:
           fpm -s dir -t deb -n arsandbox -v "$VERSION+qt5" \
             --maintainer "Domagoj Milardovic <domagoj.milardovic@gmail.com>" \
             --license GPL-2.0 --url https://github.com/${{ github.repository }} \
-            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu 22.04)" \
+            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu 18.04 and 20.04)" \
             --depends libudev1 --depends libdbus-1-3 --depends libusb-1.0-0 \
-            --depends zlib1g --depends libssl3 --depends libpng16-16 \
+            --depends zlib1g --depends libssl1.1 --depends libpng16-16 \
             --depends libjpeg-turbo8 --depends libtiff5 --depends libasound2 \
             --depends libspeex1 --depends libopenal1 --depends libv4l-0 \
-            --depends libdc1394-25 --depends libtheora0 --depends libbluetooth3 \
+            --depends libdc1394-22 --depends libtheora0 --depends libbluetooth3 \
             --depends libfreetype6 --depends libxi6 --depends libxrandr2 \
             --depends libgl1 --depends libglu1-mesa --depends fonts-freefont-ttf \
             --depends libqt5quick5 --depends libqt5qml5 --depends qml-module-qtquick2 \
@@ -332,19 +383,22 @@ jobs:
             sudo dnf install ./arsandbox-<version>.x86_64.rpm  # Fedora 40+
             ```
 
-            On Ubuntu 22.04, use the Qt 5 build instead. It is built on 22.04
-            and links against that release's libraries, and it needs only Qt 5
-            from main rather than Qt 6 from universe:
+            On Ubuntu 18.04 or 20.04 — and derivatives such as Linux Mint 19
+            and 20 — use the Qt 5 build instead. It is built on 18.04, so it
+            needs only that release's glibc and libraries:
 
             ```bash
             sudo apt install ./arsandbox_<version>+qt5_amd64.deb
             ```
 
-            Every package above is built on the release it names and depends on
-            that release's library versions, so none of them install on
-            anything older. On earlier releases — Ubuntu 20.04 included — build
-            from source with `./install.sh`, which adapts to whichever Qt and
-            library versions your distribution actually ships.
+            Each package is built on the oldest release it claims, and depends
+            on that release's library names, so it will not install on a
+            release older than the one listed. Ubuntu 22.04 falls between the
+            two packages — it renamed `libssl1.1` to `libssl3`, which the Qt 5
+            build needs, but predates the `t64` names the Qt 6 build needs — so
+            on 22.04, and on anything not listed above, build from source with
+            `./install.sh`, which adapts to whichever Qt and library versions
+            your distribution actually ships.
 
             Like the rest of this workflow, the packages are built without a
             Kinect attached and are not hardware-tested in CI; if one doesn't
