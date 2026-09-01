@@ -298,6 +298,17 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool haveDisk; // Flag whether a disk is currently visible
 	bool diskEverSeenThisCalibration; // Flag whether a disk has been detected at least once since the current calibration started
 	double lastDiskTime; // Application time at which a disk was last extracted
+
+	/* Each target is measured over a run of consecutive observations rather than
+	   one, as the standalone CalibrateProjector does: a single frame's disk
+	   centre carries the sensor's full per-frame noise straight into the solve,
+	   and twelve such points are not enough to average it back out: */
+	static const unsigned int numTiePointFrames=60; // Observations collected per target, ~2s at 30Hz
+	static const double captureRunTimeout; // Seconds without a usable extraction before a run is abandoned
+	bool capturingTiePoint; // Flag whether observations are being collected for the current target
+	std::vector<Geometry::Point<double,3> > pendingTiePointSamples; // Disk centres collected for the current target
+	double tiePointCaptureDeadline; // Application time at which an incomplete run is abandoned
+	unsigned int lastCandidateCount; // Plausible disks in the most recent extraction, for reporting why a run stalled
 	std::string projectionMatrixFileName; // Path of the projector matrix file to write
 
 	/* Depth frames fed to the disk extractor are averaged over a short ring
@@ -316,7 +327,9 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool isOverSandbox(const Point& p) const; // Returns whether a camera-space point lies over the measured sandbox footprint
 	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target
 	void startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount); // Begins a projector calibration
-	void captureTiePoint(void); // Records the currently visible disk against the current target
+	void captureTiePoint(void); // Begins collecting observations of the currently visible disk against the current target
+	void collectTiePointSample(void); // Adds one observation to the current run, committing it when the run is full
+	void abandonTiePointRun(void); // Gives up on an interrupted run and reports why it stalled
 	void finishProjectorCalibration(void); // Solves for the projection matrix and writes it
 	void abortProjectorCalibration(void); // Cancels a calibration in progress
 	void restoreDepthStream(void); // Turns background removal back off after a calibration

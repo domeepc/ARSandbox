@@ -909,14 +909,17 @@ void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disk
 	     CalibrateProjector rejects these; this did not.
 	   - A blob outside the measured sandbox cannot be the target, whatever its
 	     shape. The box rim is the common one.
-	   Among what survives, the disk closest to the expected target radius wins,
-	   not the biggest blob. Biggest was actively wrong: the calibration blanks
-	   the sand out, so the largest foreground object is usually the forearm
-	   holding the target, and the shape gates are loose enough to let a piece of
-	   one through. */
-	const Kinect::DiskExtractor::Disk* best=0;
-	double bestRadiusError=0.0;
-	const double targetRadius=diskExtractor!=0?double(diskExtractor->getDiskRadius()):6.0;
+	   What survives must then be the *only* candidate, as in the standalone
+	   CalibrateProjector's "diskList.getLockedValue().size()==1". Picking the
+	   best of several was the wrong instinct: if two things in view both look
+	   like the target there is no way to know which one the operator is holding
+	   on the crosshair, and guessing wrong writes a tie point that is simply a
+	   lie. Discarding the frame costs nothing -- another arrives in 33ms -- and
+	   a run that never completes now reports why.
+	   The count is taken after the filters rather than on the raw list, so a
+	   blob outside the sandbox does not veto an otherwise unambiguous frame. */
+	const Kinect::DiskExtractor::Disk* candidate=0;
+	unsigned int candidateCount=0;
 
 	for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin();dIt!=disks.end();++dIt)
 		{
@@ -929,16 +932,15 @@ void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disk
 		if(!isOverSandbox(dIt->center))
 			continue;
 
-		const double radiusError=Math::abs(double(dIt->radius)-targetRadius);
-		if(best==0||radiusError<bestRadiusError)
-			{
-			best=&*dIt;
-			bestRadiusError=radiusError;
-			}
+		candidate=&*dIt;
+		++candidateCount;
 		}
 
-	if(best!=0)
+	lastCandidateCount=candidateCount;
+
+	if(candidateCount==1)
 		{
+		const Kinect::DiskExtractor::Disk* best=candidate;
 		lastDisk.startNewValue()=*best;
 		lastDisk.postNewValue();
 		diskEverSeenThisCalibration=true;
@@ -1011,6 +1013,9 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	tiePoints.clear();
 	tiePointIndex=0;
 	haveDisk=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
+	lastCandidateCount=0;
 	diskEverSeenThisCalibration=false;
 	diskAveragingRingSize=0;
 	diskAveragingRingNext=0;
@@ -1049,16 +1054,73 @@ void Sandbox::captureTiePoint(void)
 		std::cerr<<"Ignoring capture request: no projector calibration is running"<<std::endl;
 		return;
 		}
+	if(capturingTiePoint)
+		return; // Already collecting for this target; a second press is not a second point
+
 	if(!haveDisk)
 		{
 		sendEvent("calibrationNoTarget projector");
 		return;
 		}
 
-	TiePoint tp;
-	tp.p=getTiePointTarget(tiePointIndex);
-	tp.o=lastDisk.getLockedValue().center;
-	tiePoints.push_back(tp);
+	/* Begin a run rather than taking the sample here. The observations are
+	   gathered in frame(), one per extraction, and only become tie points once a
+	   full run is in hand -- so a run that is interrupted contributes nothing
+	   instead of leaving a partial, differently-weighted target in the solve. */
+	capturingTiePoint=true;
+	pendingTiePointSamples.clear();
+	pendingTiePointSamples.reserve(numTiePointFrames);
+	tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+
+	std::ostringstream capturing;
+	capturing<<"calibrationCapturing projector "<<tiePointIndex<<" "<<numTiePoints;
+	sendEvent(capturing.str().c_str());
+	}
+
+void Sandbox::collectTiePointSample(void)
+	{
+	/* One observation of the target currently being measured. Called from frame()
+	   for every extraction that produced exactly one plausible disk. */
+	pendingTiePointSamples.push_back(lastDisk.getLockedValue().center);
+	if(pendingTiePointSamples.size()<numTiePointFrames)
+		{
+		/* Each accepted observation renews the allowance, so a slow but steady
+		   run is fine and only an actual stall gives up: */
+		tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+		return;
+		}
+
+	/* A full run: commit every observation as its own tie point, exactly as the
+	   standalone CalibrateProjector does. Feeding all of them to the least
+	   squares system rather than one averaged point is what actually cancels the
+	   noise -- the solve weights each target equally either way, since every
+	   target contributes the same number of observations. */
+	capturingTiePoint=false;
+
+	Geometry::Point<double,3> centroid=Geometry::Point<double,3>::origin;
+	for(std::vector<Geometry::Point<double,3> >::const_iterator sIt=pendingTiePointSamples.begin();sIt!=pendingTiePointSamples.end();++sIt)
+		for(int i=0;i<3;++i)
+			centroid[i]+=(*sIt)[i]/double(pendingTiePointSamples.size());
+
+	double spread=0.0;
+	const Geometry::Point<double,2> target=getTiePointTarget(tiePointIndex);
+	for(std::vector<Geometry::Point<double,3> >::const_iterator sIt=pendingTiePointSamples.begin();sIt!=pendingTiePointSamples.end();++sIt)
+		{
+		spread=Math::max(spread,Geometry::dist(*sIt,centroid));
+
+		TiePoint tp;
+		tp.p=target;
+		tp.o=*sIt;
+		tiePoints.push_back(tp);
+		}
+	pendingTiePointSamples.clear();
+
+	/* Printed, not enforced: how far the observations scattered says whether the
+	   target was actually held still, and it is the number to look at if a
+	   calibration solves badly despite every check passing. The standalone tool
+	   reports its own spread the same way, as the tie points' z range. */
+	std::cout<<"Tie point "<<(tiePointIndex+1)<<" of "<<numTiePoints<<": "<<numTiePointFrames
+	         <<" observations, spread "<<spread<<" cm"<<std::endl;
 
 	++tiePointIndex;
 	if(tiePointIndex>=numTiePoints)
@@ -1069,6 +1131,34 @@ void Sandbox::captureTiePoint(void)
 		progress<<"calibrationProgress projector "<<tiePointIndex<<" "<<numTiePoints;
 		sendEvent(progress.str().c_str());
 		}
+	}
+
+void Sandbox::abandonTiePointRun(void)
+	{
+	/* The run stalled: no usable extraction for a while. Say which of the two
+	   reasons it was, since they need opposite corrections -- show the target,
+	   or take the second object out of view. */
+	const unsigned int got=(unsigned int)(pendingTiePointSamples.size());
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
+
+	std::ostringstream stalled;
+	if(lastCandidateCount>1)
+		{
+		stalled<<"calibrationAmbiguous projector "<<lastCandidateCount<<" "<<got<<" "<<numTiePointFrames;
+		std::cerr<<"Tie point capture abandoned after "<<got<<" of "<<numTiePointFrames
+		         <<" observations: "<<lastCandidateCount<<" objects in view look like the target, "
+		         <<"so which one is on the crosshair is ambiguous. Take everything but the disk "
+		         <<"out of the sandbox area."<<std::endl;
+		}
+	else
+		{
+		stalled<<"calibrationLostTarget projector "<<got<<" "<<numTiePointFrames;
+		std::cerr<<"Tie point capture abandoned after "<<got<<" of "<<numTiePointFrames
+		         <<" observations: the target stopped being detected. Hold the disk still, "
+		         <<"face on to the camera, until the capture completes."<<std::endl;
+		}
+	sendEvent(stalled.str().c_str());
 	}
 
 void Sandbox::restoreDepthStream(void)
@@ -1084,6 +1174,8 @@ void Sandbox::abortProjectorCalibration(void)
 	if(!calibratingProjector)
 		return;
 	calibratingProjector=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
 	diskExtractor->stopStreaming();
 	restoreDepthStream();
 	tiePoints.clear();
@@ -1093,6 +1185,8 @@ void Sandbox::abortProjectorCalibration(void)
 void Sandbox::finishProjectorCalibration(void)
 	{
 	calibratingProjector=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
 	diskExtractor->stopStreaming();
 	restoreDepthStream();
 
@@ -1586,6 +1680,12 @@ void printUsage(void)
 
 }
 
+/* Generous: the extractor only reports when it actually finds a disk, so a run
+   legitimately pauses whenever the operator's hand drifts. Long enough not to
+   punish that, short enough that a truly stalled capture reports itself rather
+   than leaving the panel waiting. */
+const double Sandbox::captureRunTimeout=3.0;
+
 Sandbox::Sandbox(int& argc,char**& argv)
 	:Vrui::Application(argc,argv),
 	 remoteServer(0),
@@ -1602,6 +1702,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 pendingPlaneValid(false),numPendingCorners(0),
 	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
+	 capturingTiePoint(false),tiePointCaptureDeadline(0.0),lastCandidateCount(0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
 	{
 	/* Runs restartIfRequested() after this object is fully destroyed, whether
@@ -2007,7 +2108,10 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	diskExtractor->setMaxBlobMergeDist(4);
 	diskExtractor->setMinNumPixels(300);
 	diskExtractor->setDiskRadius(6.0);
-	diskExtractor->setDiskRadiusMargin(1.5); // Accepts a 4-9cm fitted radius
+	/* 1.2 accepts a 5-7.2cm fitted radius. 1.5 (4-9cm) was wide enough that a
+	   forearm segment could land inside it and be indistinguishable from the
+	   target; the standalone CalibrateProjector uses 1.10 and is stricter still. */
+	diskExtractor->setDiskRadiusMargin(1.2);
 	diskExtractor->setDiskFlatness(4.0);
 
 	/* Render the raw 3D video as the backdrop of the calibration view, the way
@@ -2751,9 +2855,21 @@ void Sandbox::frame(void)
 	   reports when it finds a disk, never when one leaves, so presence is judged
 	   by how recently it last reported: a flag set on arrival would latch on and
 	   the marker would stay put after the target was taken away. */
-	if(calibratingProjector&&lastDisk.lockNewValue())
+	bool newDisk=calibratingProjector&&lastDisk.lockNewValue();
+	if(newDisk)
 		lastDiskTime=Vrui::getApplicationTime();
 	haveDisk=calibratingProjector&&Vrui::getApplicationTime()-lastDiskTime<0.3;
+
+	/* Gather observations for the target being measured. Driven from here rather
+	   than from the extractor's callback so the samples are only ever touched on
+	   the main thread, the same reason lastDisk goes through a triple buffer. */
+	if(capturingTiePoint)
+		{
+		if(newDisk)
+			collectTiePointSample();
+		else if(Vrui::getApplicationTime()>=tiePointCaptureDeadline)
+			abandonTiePointRun();
+		}
 
 	/* Push state to the control panel a couple of times a second. Sending it per
 	   frame would be 60 writes a second for values a human is reading. */

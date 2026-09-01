@@ -87,7 +87,8 @@ Item {
             if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
                 key !== "calibrationDone" && key !== "calibrationAborted" &&
                 key !== "calibrationFailed" && key !== "calibrationNoTarget" &&
-                key !== "calibrationRejected") return
+                key !== "calibrationRejected" && key !== "calibrationCapturing" &&
+                key !== "calibrationAmbiguous" && key !== "calibrationLostTarget") return
 
             var f = value.split(" ")
 
@@ -127,6 +128,27 @@ Item {
                 // running, with no Capture button to advance it.
                 dialog.capturing = true
                 dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2]
+            } else if (key === "calibrationCapturing") {
+                // A capture is now a ~2s run of observations, not an instant, so
+                // the operator has to be told to keep still for it.
+                dialog.capturing = true
+                dialog.projectorFailed = false
+                dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2] +
+                                        " — hold the target still…"
+            } else if (key === "calibrationAmbiguous") {
+                // The run stalled, but the calibration itself is still running:
+                // capturing stays on so the Capture button is there to retry.
+                dialog.capturing = true
+                dialog.projectorFailed = true
+                dialog.projectorState = "capture stopped: " + f[1] + " objects in view look like " +
+                    "the target, so the sandbox cannot tell which one is on the crosshair. Take " +
+                    "everything except the disk out of the sandbox — including your hand — and capture again."
+            } else if (key === "calibrationLostTarget") {
+                dialog.capturing = true
+                dialog.projectorFailed = true
+                dialog.projectorState = "capture stopped after " + f[1] + " of " + f[2] +
+                    " readings: the target stopped being detected. Hold the disk still and face " +
+                    "on to the camera until the capture finishes, then capture again."
             } else if (key === "calibrationNoTarget") {
                 dialog.projectorState = "target not visible — place the disk on the crosshair"
             } else if (key === "calibrationDone") {
