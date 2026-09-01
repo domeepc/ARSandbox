@@ -131,12 +131,13 @@ is harmless.
 
 **Where is the projector calibration?**
 `sarndbox/etc/SARndbox-2.8/ProjectorMatrix.dat`, mirrored to `config/`. Written
-only when a projector calibration collects all 12 tie points and solves cleanly.
+only when a projector calibration collects all configured tie points (12 by
+default) and solves cleanly.
 
 **A calibration ran but no `ProjectorMatrix.dat` appeared.**
-The file is written only when all 12 tie points are collected *and* the solve
-passes its checks. Every way that can fail now reports itself in the panel's
-Projector alignment line and on the sandbox's terminal:
+The file is written only when all configured tie points (12 by default) are
+collected *and* the solve passes its checks. Every way that can fail now reports
+itself in the panel's Projector alignment line and on the sandbox's terminal:
 
 | Reason | What it means |
 |--------|---------------|

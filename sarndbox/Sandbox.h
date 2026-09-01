@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #ifndef SANDBOX_INCLUDED
 #define SANDBOX_INCLUDED
 
+#include <atomic>
 #include <vector>
 #include <string>
 #include <Threads/Mutex.h>
@@ -308,7 +309,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool capturingTiePoint; // Flag whether observations are being collected for the current target
 	std::vector<Geometry::Point<double,3> > pendingTiePointSamples; // Disk centres collected for the current target
 	double tiePointCaptureDeadline; // Application time at which an incomplete run is abandoned
-	unsigned int lastCandidateCount; // Plausible disks in the most recent extraction, for reporting why a run stalled
+	std::atomic<unsigned int> lastCandidateCount; // Plausible disks in the most recent extraction, for reporting why a run stalled
 	std::string projectionMatrixFileName; // Path of the projector matrix file to write
 
 	/* Depth frames fed to the disk extractor are averaged over a short ring

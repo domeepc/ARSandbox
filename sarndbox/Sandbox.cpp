@@ -1071,6 +1071,7 @@ void Sandbox::captureTiePoint(void)
 	pendingTiePointSamples.clear();
 	pendingTiePointSamples.reserve(numTiePointFrames);
 	tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+	Vrui::scheduleUpdate(tiePointCaptureDeadline);
 
 	std::ostringstream capturing;
 	capturing<<"calibrationCapturing projector "<<tiePointIndex<<" "<<numTiePoints;
@@ -1087,6 +1088,7 @@ void Sandbox::collectTiePointSample(void)
 		/* Each accepted observation renews the allowance, so a slow but steady
 		   run is fine and only an actual stall gives up: */
 		tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+		Vrui::scheduleUpdate(tiePointCaptureDeadline);
 		return;
 		}
 
@@ -1139,15 +1141,16 @@ void Sandbox::abandonTiePointRun(void)
 	   reasons it was, since they need opposite corrections -- show the target,
 	   or take the second object out of view. */
 	const unsigned int got=(unsigned int)(pendingTiePointSamples.size());
+	const unsigned int candidateCount=lastCandidateCount.load();
 	capturingTiePoint=false;
 	pendingTiePointSamples.clear();
 
 	std::ostringstream stalled;
-	if(lastCandidateCount>1)
+	if(candidateCount>1)
 		{
-		stalled<<"calibrationAmbiguous projector "<<lastCandidateCount<<" "<<got<<" "<<numTiePointFrames;
+		stalled<<"calibrationAmbiguous projector "<<candidateCount<<" "<<got<<" "<<numTiePointFrames;
 		std::cerr<<"Tie point capture abandoned after "<<got<<" of "<<numTiePointFrames
-		         <<" observations: "<<lastCandidateCount<<" objects in view look like the target, "
+		         <<" observations: "<<candidateCount<<" objects in view look like the target, "
 		         <<"so which one is on the crosshair is ambiguous. Take everything but the disk "
 		         <<"out of the sandbox area."<<std::endl;
 		}
