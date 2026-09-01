@@ -2197,7 +2197,8 @@ const double Sandbox::captureRunTimeout=3.0;
 	   the PCA-fitted extents and were tight enough that a few degrees of
 	   hand-held tilt already failed the shape test; a 6cm-radius disk tilted
 	   ~25 degrees has about 2.5cm of through-depth spread and ~10% foreshortening
-	   on one in-plane axis, so both are loosened to tolerate that plus noise. */
+	   on one in-plane axis, so both were loosened to tolerate that plus noise.
+	   diskFlatness has since been tightened again -- see below. */
 	/* The shape test is not tilt-invariant: DiskExtractor runs its PCA in depth
 	   image space, where x and y are pixels and z is raw disparity, so a tilted
 	   target's fitted axes come out skewed and it fails the radius test even
@@ -2213,7 +2214,13 @@ const double Sandbox::captureRunTimeout=3.0;
 	   forearm segment could land inside it and be indistinguishable from the
 	   target; the standalone CalibrateProjector uses 1.10 and is stricter still. */
 	diskExtractor->setDiskRadiusMargin(1.2);
-	diskExtractor->setDiskFlatness(4.0);
+	/* 2.0cm of through-depth spread is about 19 degrees of tilt on a 6cm radius
+	   (6*sin(19deg) ~= 2.0), so the target has to be held flatter than the ~25
+	   degrees the margins above were sized for -- 4.0 accepted roughly 42. The
+	   trade is that fewer non-disk blobs, a cupped hand or a forearm segment,
+	   pass the shape test; the cost is that a steeply tilted but genuine disk is
+	   now rejected, which shows up as a run that stalls rather than a bad take. */
+	diskExtractor->setDiskFlatness(2.0);
 
 	/* Render the raw 3D video as the backdrop of the calibration view, the way
 	   the standalone CalibrateProjector does. Untextured and unlit: the sandbox
