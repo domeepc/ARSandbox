@@ -1,0 +1,15 @@
+<RCC>
+    <qresource prefix="/SandboxControl">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="ControlsPage.qml">ControlsPage.qml</file>
+        <file alias="WaterPage.qml">WaterPage.qml</file>
+        <file alias="CalibrationPage.qml">CalibrationPage.qml</file>
+        <file alias="DepthPicker.qml">DepthPicker.qml</file>
+        <file alias="Setting.qml">Setting.qml</file>
+        <file alias="Section.qml">Section.qml</file>
+        <file alias="Heading.qml">Heading.qml</file>
+        <file alias="Note.qml">Note.qml</file>
+        <file alias="Step.qml">Step.qml</file>
+        <file alias="Check.qml">Check.qml</file>
+    </qresource>
+</RCC>

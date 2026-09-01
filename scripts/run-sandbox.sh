@@ -7,8 +7,9 @@
 # the FIFO has to exist before the sandbox starts.
 
 # Defaults to the in-tree build, which is where install.sh builds and leaves it.
-# The packaged launcher overrides this with /opt/arsandbox.
-SANDBOX_DIR=${SANDBOX_DIR:-$(cd "$(dirname "$0")/../sarndbox" && pwd)}
+# The packaged launcher overrides this with /opt/arsandbox. Exported: the panel
+# started below needs it too, not just SARndbox at the bottom of this script.
+export SANDBOX_DIR=${SANDBOX_DIR:-$(cd "$(dirname "$0")/../sarndbox" && pwd)}
 PIPE=${SARNDBOX_PIPE:-/tmp/sarndbox.pipe}
 
 if [ ! -x "$SANDBOX_DIR/bin/SARndbox" ]; then
@@ -50,8 +51,24 @@ for p in "$PIPE" "$PIPE.status"; do
 done
 
 echo "Control pipe: $PIPE"
-echo "Start the panel with: control-panel/build/sandbox-control -p $PIPE"
 echo
+
+# Started here rather than left for the user to run by hand: the sandbox's own
+# right-click menu only raises an *already-running* panel (Main.qml's
+# onShowRequested/onShowMenuRequested just reveal an existing window), so
+# without a panel already listening on the pipe, right-click would silently do
+# nothing. Backgrounded before the exec below - the panel retries opening the
+# pipe on its own until SARndbox is actually up, so launch order doesn't
+# matter. Falls back to the in-tree build for a checkout that hasn't been
+# installed with install.sh yet.
+PANEL=$(command -v sandbox-control || true)
+[ -x "$PANEL" ] || PANEL="$(dirname "$0")/../control-panel/build/sandbox-control"
+if [ -x "$PANEL" ]; then
+	"$PANEL" -p "$PIPE" &
+else
+	echo "sandbox-control not found; right-click won't be able to open the panel"
+	echo "Start it by hand with: control-panel/build/sandbox-control -p $PIPE"
+fi
 
 # -uhm  use height map colouring
 # -uhs  enable hill shading, without which the relief shading settings do nothing

@@ -112,8 +112,12 @@ install -m u=rw,go=r "$RESOURCEDIR"/Shaders/* "$STAGEPREFIX/$RESOURCEDIR/Shaders
 
 say "Building the control panel into $PREFIX/bin"
 cd "$REPO/control-panel"
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$JOBS"
+# See install.sh's own control panel step: the classic in-build-directory
+# invocation works on any CMake version, unlike -S/-B (3.13+) or --build's
+# own -j (3.12+).
+mkdir -p build
+(cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..)
+cmake --build build -- -j"$JOBS"
 install -d "$STAGEPREFIX/bin"
 install -m755 build/sandbox-control "$STAGEPREFIX/bin/sandbox-control"
 

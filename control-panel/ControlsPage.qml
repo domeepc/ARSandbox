@@ -1,7 +1,7 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import Qt.labs.settings
+import QtQuick 2.9
+import QtQuick.Controls 2.2
+import QtQuick.Layouts 1.3
+import Qt.labs.settings 1.0
 
 // Live controls. Everything here maps to a control pipe command the sandbox
 // already accepts, so nothing on this page needs the sandbox to be modified.
@@ -28,7 +28,8 @@ Item {
 
     Connections {
         target: pipe
-        function onConnectedChanged() {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onConnectedChanged: {
             if (pipe.connected) {
                 pipe.send("contourLineSpacing " + persisted.contourLineSpacing.toFixed(2))
                 pipe.send("contourLineWidth " + persisted.contourLineWidth.toFixed(1))
@@ -41,58 +42,6 @@ Item {
     // Azimuth and elevation travel as one command, so both sliders send together.
     function sendSun() {
         pipe.send("sunDirection " + persisted.sunAzimuth.toFixed(0) + " " + persisted.sunElevation.toFixed(0))
-    }
-
-    component Setting: ColumnLayout {
-        id: setting
-        property string label
-        property string command
-        property real from: 0
-        property real to: 1
-        property int decimals: 2
-
-        Layout.fillWidth: true
-        spacing: 4
-
-        RowLayout {
-            Layout.fillWidth: true
-            Label { text: setting.label; font.pixelSize: 16; Layout.fillWidth: true }
-            Label {
-                text: slider.value.toFixed(setting.decimals)
-                font.pixelSize: 16; font.family: "monospace"; opacity: 0.9
-            }
-        }
-
-        // Sends on release rather than per pixel: the sandbox reads its pipe once
-        // per frame, so streaming every intermediate value would just fill it.
-        Slider {
-            id: slider
-            Layout.fillWidth: true
-            implicitHeight: page.touchTarget
-            from: setting.from
-            to: setting.to
-            value: persisted[setting.command]
-            enabled: pipe.connected
-            onPressedChanged: if (!pressed) {
-                persisted[setting.command] = value
-                pipe.send(setting.command + " " + value.toFixed(setting.decimals))
-            }
-        }
-    }
-
-    component Section: ColumnLayout {
-        id: section
-        property string title
-        Layout.fillWidth: true
-        spacing: page.gap
-        Label {
-            text: section.title
-            font.pixelSize: 13
-            font.bold: true
-            font.capitalization: Font.AllUppercase
-            opacity: 0.85
-            Layout.topMargin: page.gap
-        }
     }
 
     ScrollView {
@@ -146,14 +95,20 @@ Item {
                     command: "contourLineSpacing"
                     from: 0.1; to: 5.0
                     decimals: 2
+                    touchTarget: page.touchTarget
+                    value: persisted.contourLineSpacing
                     enabled: contourSwitch.checked
+                    onCommitted: function(v) { persisted.contourLineSpacing = v }
                 }
                 Setting {
                     label: "Width (screen pixels)"
                     command: "contourLineWidth"
                     from: 0.5; to: 5.0
                     decimals: 1
+                    touchTarget: page.touchTarget
+                    value: persisted.contourLineWidth
                     enabled: contourSwitch.checked
+                    onCommitted: function(v) { persisted.contourLineWidth = v }
                 }
 
                 Section { title: "Relief shading" }
@@ -171,6 +126,9 @@ Item {
                     command: "reliefStrength"
                     from: 0.0; to: 1.0
                     decimals: 2
+                    touchTarget: page.touchTarget
+                    value: persisted.reliefStrength
+                    onCommitted: function(v) { persisted.reliefStrength = v }
                 }
 
                 // The sun direction is sent as a pair, so these two share one

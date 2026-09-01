@@ -49,14 +49,27 @@ PACKAGES="build-essential g++ cmake ninja-build git wget
 sudo apt-get update
 sudo apt-get install -y $PACKAGES
 
-# Qt 6 for the control panel. The distribution packages are enough; if a newer
-# Qt is installed elsewhere, pass QT_PREFIX to point CMake at it.
+# Qt 6 for the control panel. Ubuntu did not package Qt 6 until 22.04, so on
+# older releases (e.g. 20.04) fall back to Qt 5 instead - the control panel's
+# CMakeLists.txt picks up whichever one is actually installed. If a newer Qt
+# is installed elsewhere, pass QT_PREFIX to point CMake at it instead.
 if [ -z "${QT_PREFIX:-}" ]; then
-	sudo apt-get install -y qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
-		qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-		qml6-module-qtquick-window qml6-module-qtqml-workerscript \
-		qml6-module-qtquick-templates qml6-module-qtcore || \
-		echo "note: Qt 6 packages unavailable; set QT_PREFIX to an existing Qt installation"
+	if apt-cache show qt6-base-dev >/dev/null 2>&1; then
+		sudo apt-get install -y qt6-base-dev qt6-declarative-dev qml6-module-qtquick \
+			qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+			qml6-module-qtquick-window qml6-module-qtqml-workerscript \
+			qml6-module-qtquick-templates qml6-module-qt-labs-settings || \
+			echo "note: Qt 6 packages unavailable; set QT_PREFIX to an existing Qt installation"
+	else
+		say "Qt 6 is not packaged on this release; using Qt 5"
+		# Unlike Qt 6, Qt 5 never split WorkerScript out into its own apt
+		# package - it ships inside qtdeclarative5-dev's own QML plugins.
+		sudo apt-get install -y qtbase5-dev qtdeclarative5-dev qml-module-qtquick2 \
+			qml-module-qtquick-controls2 qml-module-qtquick-layouts \
+			qml-module-qtquick-window2 qml-module-qtquick-templates2 \
+			qml-module-qt-labs-settings || \
+			echo "note: Qt 5 packages unavailable; set QT_PREFIX to an existing Qt installation"
+	fi
 fi
 
 # ----------------------------------------------------------------------- Vrui
@@ -100,12 +113,13 @@ fi
 
 # --------------------------------------------------------------- Kinect package
 
+KINECT_VERSION=${KINECT_VERSION:-3.10}
+
 if [ -x "$PREFIX/bin/KinectUtil" ]; then
 	say "Vrui Kinect package already installed; skipping"
 else
 	say "Building the Vrui Kinect package"
 	cd "$SRCDIR"
-	KINECT_VERSION=${KINECT_VERSION:-3.10}
 	if [ ! -d "Kinect-$KINECT_VERSION" ]; then
 		wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" | tar xz
 	fi
@@ -114,6 +128,14 @@ else
 	sudo make VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make" install
 	sudo make VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make" installudevrules
 fi
+
+# `make install` above runs as root, so the Kinect config directory it creates
+# is root-owned - but that's also where KinectUtil writes each camera's
+# intrinsic calibration file, run later from the control panel as the normal
+# user, with no sudo in sight. Hand it back to whoever is actually running
+# this script so that write succeeds. Unconditional (outside the if/else
+# above) so this also repairs an already-installed setup, not just a fresh one.
+sudo chown -R "$(id -u):$(id -g)" "$PREFIX/etc/Vrui-$VRUI_MAJOR/Kinect-$KINECT_VERSION"
 
 # -------------------------------------------------------------------- SARndbox
 
@@ -129,10 +151,15 @@ make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make"
 
 say "Building the control panel"
 cd "$REPO/control-panel"
-CMAKE_ARGS=(-S . -B build -DCMAKE_BUILD_TYPE=Release)
+CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release)
 [ -n "${QT_PREFIX:-}" ] && CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
-cmake "${CMAKE_ARGS[@]}"
-cmake --build build -j"$JOBS"
+# The classic in-build-directory invocation rather than -S/-B: the latter
+# needs CMake 3.13+, which Ubuntu 18.04's packaged CMake predates. Likewise
+# cmake --build's own -j needs 3.12+, so pass it to the underlying build tool
+# (make/ninja, both of which have always supported -j) via -- instead.
+mkdir -p build
+(cd build && cmake "${CMAKE_ARGS[@]}" ..)
+cmake --build build -- -j"$JOBS"
 
 say "Installing the control panel into $PREFIX/bin"
 sudo install -m755 build/sandbox-control "$PREFIX/bin/sandbox-control"

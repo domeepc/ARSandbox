@@ -456,12 +456,24 @@ void Sandbox::showWaterControlDialogCallback(Misc::CallbackData* cbData)
 	Vrui::popupPrimaryWidget(waterControlDialog);
 	}
 
-void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
+/**
+	 * @brief Updates the water simulation speed from the slider value.
+	 *
+	 * @param cbData Callback data containing the selected water speed.
+	 */
+	void Sandbox::waterSpeedSliderCallback(GLMotif::TextFieldSlider::ValueChangedCallbackData* cbData)
 	{
 	waterSpeed=cbData->value;
 	}
 
-void Sandbox::sendStatus(void)
+/**
+	 * @brief Sends the current application status to the control panel.
+	 *
+	 * The status includes frame rate, terrain-update pause state, water settings,
+	 * and projector-view state. If the status pipe is unavailable, the update is
+	 * skipped and the connection is retried later.
+	 */
+	void Sandbox::sendStatus(void)
 	{
 	/* Connect lazily. The panel may be started and stopped any number of times
 	   while the sandbox runs, so a missing reader is a normal state and not an
@@ -469,7 +481,7 @@ void Sandbox::sendStatus(void)
 	   otherwise blocks until a reader appears, which would freeze the sandbox. */
 	if(statusPipeFd<0)
 		{
-		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK);
+		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK|O_CLOEXEC);
 		if(statusPipeFd<0)
 			return;
 		}
@@ -855,21 +867,110 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 
 #endif
 
-void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
+/**
+	 * @brief Determines whether a point lies within the measured sandbox footprint.
+	 *
+	 * Points within five centimeters of the footprint boundary are accepted. Degenerate
+	 * layouts accept all points.
+	 *
+	 * @param p Point to test.
+	 * @return `true` if the point is within the footprint or its boundary margin,
+	 *         `false` otherwise.
+	 */
+	bool Sandbox::isOverSandbox(const Point& p) const
+	{
+	/* Same-sign test against the four edges of the measured footprint, which is
+	   convex. Taking the sign from the quad's own centroid rather than from the
+	   base plane's normal keeps this independent of which way that normal
+	   happens to point, so it cannot silently invert into rejecting everything
+	   inside the box and accepting everything outside it.
+	   The margin is generous: a target held at the very edge of the sand still
+	   has to count, and BoxLayout.txt is measured by hand. It only has to be
+	   tight enough to exclude what is actually causing bad captures -- the box
+	   rim, the operator, and the far side of the room. */
+	const double marginCm=5.0;
+
+	Point centroid=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),
+	                             Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+
+	/* Corner order is the order they are measured and written in: bottom left,
+	   bottom right, upper left, upper right -- so the quad's cycle is 0,1,3,2. */
+	static const int cycle[4][2]={{0,1},{1,3},{3,2},{2,0}};
+	Vector normal=Geometry::cross(basePlaneCorners[1]-basePlaneCorners[0],
+	                              basePlaneCorners[2]-basePlaneCorners[0]);
+	if(normal.mag()<=0.0)
+		return true; // Degenerate layout: no usable footprint, so do not reject anything on its behalf
+	normal.normalize();
+
+	for(int i=0;i<4;++i)
+		{
+		const Point& a=basePlaneCorners[cycle[i][0]];
+		Vector edge=basePlaneCorners[cycle[i][1]]-a;
+		Vector inward=Geometry::cross(normal,edge);
+		if(inward.mag()<=0.0)
+			continue;
+		inward.normalize();
+		if(inward*(centroid-a)<0.0)
+			inward=-inward;
+		if(inward*(p-a)<-marginCm)
+			return false;
+		}
+
+	return true;
+	}
+
+/**
+	 * @brief Publishes the sole valid calibration disk candidate for the current frame.
+	 *
+	 * Candidates must have finite position and radius and lie within the sandbox
+	 * footprint. Frames with zero or multiple valid candidates are discarded.
+	 *
+	 * @param disks Detected disk candidates for the current depth frame.
+	 */
+	void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks)
 	{
 	/* Called from the disk extractor's own thread, so the result is handed to the
-	   main thread through a triple buffer rather than touched directly. Every
-	   entry already passed the shape test; prefer the largest blob rather than
-	   discarding the frame when more than one appears, since a spurious patch of
-	   clutter is reliably smaller than the target the user is deliberately
-	   holding still. */
-	if(!disks.empty())
-		{
-		const Kinect::DiskExtractor::Disk* best=&disks.front();
-		for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin()+1;dIt!=disks.end();++dIt)
-			if(dIt->numPixels>best->numPixels)
-				best=&*dIt;
+	   main thread through a triple buffer rather than touched directly.
+	   Two filters before anything is accepted, both of which the tie point solver
+	   depends on and neither of which the shape test provides:
+	   - A non-finite centre poisons the whole least-squares system, and every
+	     later check still passes, so the calibration fails at the very end with
+	     mismatched projective weights rather than here. The standalone
+	     CalibrateProjector rejects these; this did not.
+	   - A blob outside the measured sandbox cannot be the target, whatever its
+	     shape. The box rim is the common one.
+	   What survives must then be the *only* candidate, as in the standalone
+	   CalibrateProjector's "diskList.getLockedValue().size()==1". Picking the
+	   best of several was the wrong instinct: if two things in view both look
+	   like the target there is no way to know which one the operator is holding
+	   on the crosshair, and guessing wrong writes a tie point that is simply a
+	   lie. Discarding the frame costs nothing -- another arrives in 33ms -- and
+	   a run that never completes now reports why.
+	   The count is taken after the filters rather than on the raw list, so a
+	   blob outside the sandbox does not veto an otherwise unambiguous frame. */
+	const Kinect::DiskExtractor::Disk* candidate=0;
+	unsigned int candidateCount=0;
 
+	for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin();dIt!=disks.end();++dIt)
+		{
+		bool finite=Math::isFinite(dIt->radius);
+		for(int i=0;i<3&&finite;++i)
+			finite=Math::isFinite(dIt->center[i]);
+		if(!finite)
+			continue;
+
+		if(!isOverSandbox(dIt->center))
+			continue;
+
+		candidate=&*dIt;
+		++candidateCount;
+		}
+
+	lastCandidateCount=candidateCount;
+
+	if(candidateCount==1)
+		{
+		const Kinect::DiskExtractor::Disk* best=candidate;
 		lastDisk.startNewValue()=*best;
 		lastDisk.postNewValue();
 		diskEverSeenThisCalibration=true;
@@ -880,7 +981,13 @@ void Sandbox::diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disk
 		}
 	}
 
-Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
+/**
+	 * @brief Computes the projector-image position of a calibration tie point.
+	 *
+	 * @param index Zero-based tie-point index.
+	 * @return Projector-image coordinates for the tie point.
+	 */
+	Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 	{
 	/* Lay the targets out on a grid inset from the edges of the projected image.
 	   Targets right at the border would put the disk half off the sand, and a
@@ -899,11 +1006,52 @@ Geometry::Point<double,2> Sandbox::getTiePointTarget(unsigned int index) const
 	                                 insetY+spanY*(rows>1?double(row)/double(rows-1):0.5));
 	}
 
-void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
+/**
+	 * @brief Starts projector calibration or resynchronizes an active calibration.
+	 *
+	 * Initializes tie-point capture, prepares the depth stream, and announces the
+	 * calibration to connected control panels. If calibration is already active,
+	 * re-announces its state and current progress without restarting it.
+	 *
+	 * @param width Projector image width in pixels.
+	 * @param height Projector image height in pixels.
+	 * @param tiePointCount Requested number of calibration tie points; at least six
+	 *        are used.
+	 */
+	void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount)
 	{
+	/* A duplicate start while already calibrating - e.g. a second click sent
+	   because the panel never learned the first one succeeded - must not
+	   restart mid-stream: diskExtractor is already streaming to a live
+	   callback, and re-entering captureBackground()/startStreaming() on top
+	   of that is what was crashing the sandbox.
+	   Returning silently was its own trap, though: a panel that restarts during
+	   a calibration comes back believing none is running, so it offers Start
+	   again, and every press is dropped here. The crosshair stays on the sand
+	   with no way to capture against it and no way to abort, for the rest of the
+	   sandbox's run - which is how a calibration ends with no ProjectorMatrix.dat
+	   written. Re-announce the calibration instead, so the panel picks up where
+	   this one actually is and can drive or abort it. */
+	if(calibratingProjector)
+		{
+		std::ostringstream resync;
+		resync<<"calibrationStarted projector "<<numTiePoints;
+		sendEvent(resync.str().c_str());
+		if(tiePointIndex>0)
+			{
+			std::ostringstream progress;
+			progress<<"calibrationProgress projector "<<tiePointIndex<<" "<<numTiePoints;
+			sendEvent(progress.str().c_str());
+			}
+		return;
+		}
+
 	if(diskExtractor==0)
 		{
 		sendEvent("calibrationFailed projector noExtractor");
+		std::cerr<<"Projector calibration cannot start: no calibration target extractor. "
+		         <<"The camera did not report intrinsic parameters, so it has not been calibrated "
+		         <<"with \"KinectUtil calibrate\"."<<std::endl;
 		return;
 		}
 
@@ -913,6 +1061,9 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	tiePoints.clear();
 	tiePointIndex=0;
 	haveDisk=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
+	lastCandidateCount=0;
 	diskEverSeenThisCalibration=false;
 	diskAveragingRingSize=0;
 	diskAveragingRingNext=0;
@@ -939,20 +1090,101 @@ void Sandbox::startProjectorCalibration(unsigned int width,unsigned int height,u
 	sendEvent(started.str().c_str());
 	}
 
-void Sandbox::captureTiePoint(void)
+/**
+	 * @brief Starts collecting observations for the current projector calibration target.
+	 *
+	 * Begins a timed multi-frame capture run when projector calibration is active and a
+	 * target disk is detected. The observations are committed as a tie point only after
+	 * the configured sample count is collected.
+	 */
+	void Sandbox::captureTiePoint(void)
 	{
 	if(!calibratingProjector)
+		{
+		/* Reported rather than dropped: a capture arriving with no calibration
+		   running means the panel and the sandbox disagree about the state, and
+		   swallowing it is what makes a whole calibration look like it simply
+		   did nothing. */
+		sendEvent("calibrationFailed projector notRunning");
+		std::cerr<<"Ignoring capture request: no projector calibration is running"<<std::endl;
 		return;
+		}
+	if(capturingTiePoint)
+		return; // Already collecting for this target; a second press is not a second point
+
 	if(!haveDisk)
 		{
 		sendEvent("calibrationNoTarget projector");
 		return;
 		}
 
-	TiePoint tp;
-	tp.p=getTiePointTarget(tiePointIndex);
-	tp.o=lastDisk.getLockedValue().center;
-	tiePoints.push_back(tp);
+	/* Begin a run rather than taking the sample here. The observations are
+	   gathered in frame(), one per extraction, and only become tie points once a
+	   full run is in hand -- so a run that is interrupted contributes nothing
+	   instead of leaving a partial, differently-weighted target in the solve. */
+	capturingTiePoint=true;
+	pendingTiePointSamples.clear();
+	pendingTiePointSamples.reserve(numTiePointFrames);
+	tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+	Vrui::scheduleUpdate(tiePointCaptureDeadline);
+
+	std::ostringstream capturing;
+	capturing<<"calibrationCapturing projector "<<tiePointIndex<<" "<<numTiePoints;
+	sendEvent(capturing.str().c_str());
+	}
+
+/**
+	 * @brief Records an accepted disk observation for the active projector-calibration tie point.
+	 *
+	 * Completed capture runs add all collected observations to the calibration and advance
+	 * to the next target or finish calibration. Capture runs remain active while additional
+	 * observations are expected.
+	 */
+	void Sandbox::collectTiePointSample(void)
+	{
+	/* One observation of the target currently being measured. Called from frame()
+	   for every extraction that produced exactly one plausible disk. */
+	pendingTiePointSamples.push_back(lastDisk.getLockedValue().center);
+	if(pendingTiePointSamples.size()<numTiePointFrames)
+		{
+		/* Each accepted observation renews the allowance, so a slow but steady
+		   run is fine and only an actual stall gives up: */
+		tiePointCaptureDeadline=Vrui::getApplicationTime()+captureRunTimeout;
+		Vrui::scheduleUpdate(tiePointCaptureDeadline);
+		return;
+		}
+
+	/* A full run: commit every observation as its own tie point, exactly as the
+	   standalone CalibrateProjector does. Feeding all of them to the least
+	   squares system rather than one averaged point is what actually cancels the
+	   noise -- the solve weights each target equally either way, since every
+	   target contributes the same number of observations. */
+	capturingTiePoint=false;
+
+	Geometry::Point<double,3> centroid=Geometry::Point<double,3>::origin;
+	for(std::vector<Geometry::Point<double,3> >::const_iterator sIt=pendingTiePointSamples.begin();sIt!=pendingTiePointSamples.end();++sIt)
+		for(int i=0;i<3;++i)
+			centroid[i]+=(*sIt)[i]/double(pendingTiePointSamples.size());
+
+	double spread=0.0;
+	const Geometry::Point<double,2> target=getTiePointTarget(tiePointIndex);
+	for(std::vector<Geometry::Point<double,3> >::const_iterator sIt=pendingTiePointSamples.begin();sIt!=pendingTiePointSamples.end();++sIt)
+		{
+		spread=Math::max(spread,Geometry::dist(*sIt,centroid));
+
+		TiePoint tp;
+		tp.p=target;
+		tp.o=*sIt;
+		tiePoints.push_back(tp);
+		}
+	pendingTiePointSamples.clear();
+
+	/* Printed, not enforced: how far the observations scattered says whether the
+	   target was actually held still, and it is the number to look at if a
+	   calibration solves badly despite every check passing. The standalone tool
+	   reports its own spread the same way, as the tie points' z range. */
+	std::cout<<"Tie point "<<(tiePointIndex+1)<<" of "<<numTiePoints<<": "<<numTiePointFrames
+	         <<" observations, spread "<<spread<<" cm"<<std::endl;
 
 	++tiePointIndex;
 	if(tiePointIndex>=numTiePoints)
@@ -965,7 +1197,48 @@ void Sandbox::captureTiePoint(void)
 		}
 	}
 
-void Sandbox::restoreDepthStream(void)
+/**
+	 * @brief Abandons an incomplete projector tie-point capture.
+	 *
+	 * Reports whether the target was ambiguous or no longer detected, then clears
+	 * the pending observations and stops the capture.
+	 */
+	void Sandbox::abandonTiePointRun(void)
+	{
+	/* The run stalled: no usable extraction for a while. Say which of the two
+	   reasons it was, since they need opposite corrections -- show the target,
+	   or take the second object out of view. */
+	const unsigned int got=(unsigned int)(pendingTiePointSamples.size());
+	const unsigned int candidateCount=lastCandidateCount.load();
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
+
+	std::ostringstream stalled;
+	if(candidateCount>1)
+		{
+		stalled<<"calibrationAmbiguous projector "<<candidateCount<<" "<<got<<" "<<numTiePointFrames;
+		std::cerr<<"Tie point capture abandoned after "<<got<<" of "<<numTiePointFrames
+		         <<" observations: "<<candidateCount<<" objects in view look like the target, "
+		         <<"so which one is on the crosshair is ambiguous. Take everything but the disk "
+		         <<"out of the sandbox area."<<std::endl;
+		}
+	else
+		{
+		stalled<<"calibrationLostTarget projector "<<got<<" "<<numTiePointFrames;
+		std::cerr<<"Tie point capture abandoned after "<<got<<" of "<<numTiePointFrames
+		         <<" observations: the target stopped being detected. Hold the disk still, "
+		         <<"face on to the camera, until the capture completes."<<std::endl;
+		}
+	sendEvent(stalled.str().c_str());
+	}
+
+/**
+	 * @brief Restores the direct depth stream after projector calibration.
+	 *
+	 * Disables temporary background removal when the active camera is a direct
+	 * Kinect frame source.
+	 */
+	void Sandbox::restoreDepthStream(void)
 	{
 	/* Undo the background removal that startProjectorCalibration turned on: */
 	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
@@ -973,20 +1246,35 @@ void Sandbox::restoreDepthStream(void)
 		directCamera->setRemoveBackground(false);
 	}
 
-void Sandbox::abortProjectorCalibration(void)
+/**
+	 * @brief Cancels the active projector calibration and restores normal depth processing.
+	 */
+	void Sandbox::abortProjectorCalibration(void)
 	{
 	if(!calibratingProjector)
 		return;
 	calibratingProjector=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
 	diskExtractor->stopStreaming();
 	restoreDepthStream();
 	tiePoints.clear();
 	sendEvent("calibrationAborted projector");
 	}
 
-void Sandbox::finishProjectorCalibration(void)
+/**
+	 * @brief Completes projector calibration and applies the resulting projection transform.
+	 *
+	 * Validates the captured tie points, computes the projector mapping, writes a backup
+	 * and updated calibration matrix, and reloads the transform for active render settings.
+	 * Reports calibration failures and fit quality through the control channel and diagnostic
+	 * output.
+	 */
+	void Sandbox::finishProjectorCalibration(void)
 	{
 	calibratingProjector=false;
+	capturingTiePoint=false;
+	pendingTiePointSamples.clear();
 	diskExtractor->stopStreaming();
 	restoreDepthStream();
 
@@ -1068,6 +1356,10 @@ void Sandbox::finishProjectorCalibration(void)
 	if(numNegativeWeights!=0&&numNegativeWeights!=int(tiePoints.size()))
 		{
 		sendEvent("calibrationFailed projector inconsistentWeights");
+		std::cerr<<"Projector calibration rejected: "<<numNegativeWeights<<" of "<<tiePoints.size()
+		         <<" targets solved to the far side of the projector's plane, which cannot happen "
+		         <<"for a real capture. Usually one or more points locked onto something other "
+		         <<"than the disk -- a hand, or the box rim."<<std::endl;
 		return;
 		}
 	if(numNegativeWeights>0)
@@ -1157,17 +1449,53 @@ void Sandbox::finishProjectorCalibration(void)
 		rsIt->fixProjectorView=rsIt->projectorTransformValid;
 		}
 
+	/* A residual this large means the solve did not really fit the captures, even
+	   though every earlier check passed -- typically a projector size that is not
+	   the one being projected onto, so the crosshairs were never where the solver
+	   was told they were. Scaled off the image diagonal rather than a fixed pixel
+	   count so it means the same thing on any projector. The matrix is still
+	   written and taken into use: it may be poor rather than useless, the user
+	   can simply calibrate again, and silently discarding the only result of a
+	   twelve-point capture is worse than reporting it. */
+	const double diagonal=Math::sqrt(Math::sqr(double(projectorImageSize[0]))+Math::sqr(double(projectorImageSize[1])));
+	/* !(res<=limit) rather than res>limit so a non-finite residual counts as poor:
+	   every comparison against a NaN is false, so the plain form would wave one
+	   through as a good calibration. The negative-weight test above has the same
+	   blind spot -- NaN weights are never < 0, so a fully poisoned solve counts
+	   zero of them and reads as consistent. Rejecting non-finite disk centres in
+	   diskExtractionCallback is what stops that reaching here at all; this is the
+	   backstop. */
+	const bool poorFit=!(res<=diagonal*0.05);
+
 	std::ostringstream done;
-	done<<"calibrationDone projector "<<res;
+	done<<"calibrationDone projector "<<res<<(poorFit?" poor":" ok");
 	sendEvent(done.str().c_str());
-	std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
+	if(poorFit)
+		std::cerr<<"Projector calibration written, but RMS residual "<<res<<" pixels is too large to trust "
+		         <<"on a "<<projectorImageSize[0]<<"x"<<projectorImageSize[1]<<" projector. Check that this "
+		         <<"is the resolution actually being projected, then capture again."<<std::endl;
+	else
+		std::cout<<"Projector calibration written, RMS residual "<<res<<" pixels"<<std::endl;
 	}
 
-bool Sandbox::sendEvent(const char* event)
+/**
+	 * @brief Sends a one-line event through the status pipe.
+	 *
+	 * @param event Event text to send.
+	 * @return true if the event was written successfully, false if the pipe is unavailable or the write fails.
+	 */
+	bool Sandbox::sendEvent(const char* event)
 	{
-	/* Ask the panel to do something. Harmless if no panel is listening. */
+	/* Open lazily, exactly like sendStatus(): without this, a one-shot event
+	   sent while the descriptor happens to be closed (no panel connected yet,
+	   or a just-dropped connection) is lost silently and for good, since
+	   nothing re-sends it later the way the periodic status line does. */
 	if(statusPipeFd<0)
-		return false;
+		{
+		statusPipeFd=open(statusPipeName.c_str(),O_WRONLY|O_NONBLOCK|O_CLOEXEC);
+		if(statusPipeFd<0)
+			return false;
+		}
 
 	const std::string line=std::string(event)+"\n";
 	if(write(statusPipeFd,line.data(),line.size())>=0)
@@ -1446,7 +1774,20 @@ void printUsage(void)
 
 }
 
-Sandbox::Sandbox(int& argc,char**& argv)
+/* Generous: the extractor only reports when it actually finds a disk, so a run
+   legitimately pauses whenever the operator's hand drifts. Long enough not to
+   punish that, short enough that a truly stalled capture reports itself rather
+   than leaving the panel waiting. */
+const double Sandbox::captureRunTimeout=3.0;
+
+/**
+	 * @brief Initializes the SARndbox application and its runtime resources.
+	 *
+	 * Loads configuration and command-line settings, initializes the selected depth
+	 * source and processing pipeline, sets up rendering, water simulation,
+	 * calibration, control pipes, and GUI components, and starts depth streaming.
+	 */
+	Sandbox::Sandbox(int& argc,char**& argv)
 	:Vrui::Application(argc,argv),
 	 remoteServer(0),
 	 camera(0),pixelDepthCorrection(0),
@@ -1462,6 +1803,7 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	 pendingPlaneValid(false),numPendingCorners(0),
 	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
+	 capturingTiePoint(false),tiePointCaptureDeadline(0.0),lastCandidateCount(0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
 	{
 	/* Runs restartIfRequested() after this object is fully destroyed, whether
@@ -1855,7 +2197,8 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	   the PCA-fitted extents and were tight enough that a few degrees of
 	   hand-held tilt already failed the shape test; a 6cm-radius disk tilted
 	   ~25 degrees has about 2.5cm of through-depth spread and ~10% foreshortening
-	   on one in-plane axis, so both are loosened to tolerate that plus noise. */
+	   on one in-plane axis, so both were loosened to tolerate that plus noise.
+	   diskFlatness has since been tightened again -- see below. */
 	/* The shape test is not tilt-invariant: DiskExtractor runs its PCA in depth
 	   image space, where x and y are pixels and z is raw disparity, so a tilted
 	   target's fitted axes come out skewed and it fails the radius test even
@@ -1867,8 +2210,17 @@ Sandbox::Sandbox(int& argc,char**& argv)
 	diskExtractor->setMaxBlobMergeDist(4);
 	diskExtractor->setMinNumPixels(300);
 	diskExtractor->setDiskRadius(6.0);
-	diskExtractor->setDiskRadiusMargin(1.5); // Accepts a 4-9cm fitted radius
-	diskExtractor->setDiskFlatness(4.0);
+	/* 1.2 accepts a 5-7.2cm fitted radius. 1.5 (4-9cm) was wide enough that a
+	   forearm segment could land inside it and be indistinguishable from the
+	   target; the standalone CalibrateProjector uses 1.10 and is stricter still. */
+	diskExtractor->setDiskRadiusMargin(1.2);
+	/* 2.0cm of through-depth spread is about 19 degrees of tilt on a 6cm radius
+	   (6*sin(19deg) ~= 2.0), so the target has to be held flatter than the ~25
+	   degrees the margins above were sized for -- 4.0 accepted roughly 42. The
+	   trade is that fewer non-disk blobs, a cupped hand or a forearm segment,
+	   pass the shape test; the cost is that a steeply tilted but genuine disk is
+	   now rejected, which shows up as a run that stalls rather than a bad take. */
+	diskExtractor->setDiskFlatness(2.0);
 
 	/* Render the raw 3D video as the backdrop of the calibration view, the way
 	   the standalone CalibrateProjector does. Untextured and unlit: the sandbox
@@ -2075,8 +2427,13 @@ Sandbox::Sandbox(int& argc,char**& argv)
 		mkfifo(controlPipeName.c_str(),0666);
 		mkfifo(statusPipeName.c_str(),0666);
 
-		/* Open the control pipe in non-blocking mode: */
-		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK);
+		/* Open the control pipe in non-blocking mode. O_CLOEXEC matters because
+		   showPanelCallback() forks and execs the control panel: without it that
+		   panel inherits this read end, so after the sandbox exits the command
+		   FIFO still has a reader and the panel's writes succeed into a pipe
+		   nobody drains -- commands vanish silently instead of reporting a lost
+		   connection. The same applies to the status pipe's write end below. */
+		controlPipeFd=open(controlPipeName.c_str(),O_RDONLY|O_NONBLOCK|O_CLOEXEC);
 		if(controlPipeFd<0)
 			std::cerr<<"Unable to open control pipe "<<controlPipeName<<"; ignoring"<<std::endl;
 
@@ -2196,7 +2553,14 @@ bool isToken(const std::string& token,const char* pattern)
 
 }
 
-void Sandbox::frame(void)
+/**
+	 * @brief Advances application state and processes pending input and calibration updates.
+	 *
+	 * Updates filtered depth and hand data, applies control-pipe commands, advances
+	 * calibration state, publishes status updates, and schedules continued updates
+	 * while frame processing is paused.
+	 */
+	void Sandbox::frame(void)
 	{
 	/* Call the remote server's frame method: */
 	if(remoteServer!=0)
@@ -2430,10 +2794,23 @@ void Sandbox::frame(void)
 						if(w>0&&h>0)
 							startProjectorCalibration(w,h,n);
 						else
-							std::cerr<<"Invalid projector size for calibrateProjector control pipe command"<<std::endl;
+							{
+							/* Told to the panel too, not just the terminal: this is
+							   what a Start press with no projector selected looks
+							   like, and from the panel it was indistinguishable
+							   from the button doing nothing at all. */
+							std::ostringstream badSize;
+							badSize<<"calibrationFailed projector badSize "<<tokens[2]<<" "<<tokens[3];
+							sendEvent(badSize.str().c_str());
+							std::cerr<<"Invalid projector size \""<<tokens[2]<<" "<<tokens[3]
+							         <<"\" for calibrateProjector control pipe command"<<std::endl;
+							}
 						}
 					else
+						{
+						sendEvent("calibrationFailed projector badCommand");
 						std::cerr<<"Usage: calibrateProjector start <width> <height> [points] | capture | abort"<<std::endl;
+						}
 					}
 				else if(isToken(tokens[0],"grabDepth"))
 					{
@@ -2593,9 +2970,21 @@ void Sandbox::frame(void)
 	   reports when it finds a disk, never when one leaves, so presence is judged
 	   by how recently it last reported: a flag set on arrival would latch on and
 	   the marker would stay put after the target was taken away. */
-	if(calibratingProjector&&lastDisk.lockNewValue())
+	bool newDisk=calibratingProjector&&lastDisk.lockNewValue();
+	if(newDisk)
 		lastDiskTime=Vrui::getApplicationTime();
 	haveDisk=calibratingProjector&&Vrui::getApplicationTime()-lastDiskTime<0.3;
+
+	/* Gather observations for the target being measured. Driven from here rather
+	   than from the extractor's callback so the samples are only ever touched on
+	   the main thread, the same reason lastDisk goes through a triple buffer. */
+	if(capturingTiePoint)
+		{
+		if(newDisk)
+			collectTiePointSample();
+		else if(Vrui::getApplicationTime()>=tiePointCaptureDeadline)
+			abandonTiePointRun();
+		}
 
 	/* Push state to the control panel a couple of times a second. Sending it per
 	   frame would be 60 writes a second for values a human is reading. */
