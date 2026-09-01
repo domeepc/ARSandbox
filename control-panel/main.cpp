@@ -24,7 +24,15 @@ restarted independently of the other.
 #include "pipe.h"
 #include "calibration.h"
 
-int main(int argc,char* argv[])
+/**
+	 * @brief Starts the SARndbox control-panel application.
+	 *
+	 * Processes command-line options, displays an error dialog when requested, or
+	 * loads the main QML control panel.
+	 *
+	 * @return The application exit status, or -1 if the QML interface fails to load.
+	 */
+	int main(int argc,char* argv[])
 	{
 	/* Writing to the command FIFO after the sandbox has exited raises SIGPIPE,
 	   whose default disposition kills this process outright -- so quitting the
