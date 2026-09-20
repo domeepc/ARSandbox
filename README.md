@@ -55,7 +55,8 @@ prefer the copies beside the sandbox binary, so they are not fooled, but a
 panel started by hand from a terminal may be the old one.
 
 Requirements: **Linux**, a Kinect v1 (Xbox 360), a projector above the box, and
-Qt 6.4+ for the panel. See [macOS](#macos).
+Qt 6.4+ for the panel — or Qt 5.9+, which the panel falls back to where Qt 6 is
+not packaged (Ubuntu 20.04 and older). See [macOS](#macos).
 
 ---
 
@@ -139,9 +140,11 @@ loads — without them the sandbox just looks subtly off with nothing to point a
 ## 5. Projector alignment
 
 Still in the Calibration tab. Pick the projector from the dropdown — check it
-against the projector's own specification, because a wrong pixel size produces a
-defective calibration with no error reported. A screen rotated with `xrandr`
-reports its rotated dimensions.
+against the projector's own specification, because a wrong pixel size can
+produce a defective calibration that still solves: a poor fit is reported only
+when the residual exceeds the threshold, so silence here is not confirmation
+that the size was right. A screen rotated with `xrandr` reports its rotated
+dimensions.
 
 Press **Start**. For the first two seconds the sandbox records the bare sand
 as its background — keep hands and the target out of view until the panel

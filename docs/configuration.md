@@ -138,7 +138,9 @@ is harmless.
 **Where is the projector calibration?**
 `sarndbox/etc/SARndbox-2.8/ProjectorMatrix.dat`, mirrored to `config/`. Written
 only when a projector calibration collects all configured tie points (12 by
-default) and solves cleanly.
+default) and the solve passes the checks in the table below. Passing those
+checks is not the same as fitting well: a matrix with a poor residual is still
+written and applied, as the note at the end of this section says.
 
 **A calibration ran but no `ProjectorMatrix.dat` appeared.**
 The file is written only when all configured tie points (12 by default) are

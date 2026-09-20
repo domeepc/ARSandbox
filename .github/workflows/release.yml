@@ -26,21 +26,38 @@ jobs:
   source:
     name: Source archive
     runs-on: ubuntu-22.04
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Record the checked-out commit
+        # github.sha is the commit the run started from, which on a manual run
+        # naming a tag is the branch head rather than the tag's commit - so a
+        # package built from the tag would advertise a hash it was not built
+        # from. Everything that names a commit uses this instead.
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Verify the installer parses
         run: bash -n install.sh
 
       - name: Archive
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          # The archive carries no .git, so install.sh cannot ask git which
+          # version it is building (see its SANDBOX_VERSION): leave the tag in
+          # a file for it, or every install from a release tarball would call
+          # itself "dev".
+          printf '%s\n' "$TAG" > VERSION
           tar --exclude-vcs \
               --exclude='sarndbox/o' --exclude='sarndbox/bin' --exclude='sarndbox/d' \
               --exclude='control-panel/build' \
               -czf arsandbox-source.tar.gz \
-              sarndbox control-panel config docs scripts install.sh README.md
+              sarndbox control-panel config docs scripts install.sh README.md VERSION
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -120,14 +137,19 @@ jobs:
           test_mode -p /tmp/smoke.pipe
 
       - name: Package
+        # The tag reaches the shell through the environment, never spliced into
+        # the script text: a manual run's tag input is whatever the person who
+        # started it typed.
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="${{ inputs.tag || github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${TAG#v}"
+          COMMIT=$(git rev-parse HEAD)
           ln -s /opt/arsandbox/bin/sandbox-control stageroot/usr/bin/sandbox-control
           fpm -s dir -t deb -n arsandbox -v "$VERSION" \
             --maintainer "Domagoj Milardovic <domagoj.milardovic@gmail.com>" \
             --license GPL-2.0 --url https://github.com/${{ github.repository }} \
-            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (git ${GITHUB_SHA::7})" \
+            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (git ${COMMIT::7})" \
             --depends libudev1 --depends libdbus-1-3 --depends libusb-1.0-0 \
             --depends zlib1g --depends libssl3t64 --depends libpng16-16t64 \
             --depends libjpeg-turbo8 --depends libtiff6 --depends libasound2 \
@@ -186,7 +208,8 @@ jobs:
           # Mounted at the same path as on the host so that paths baked into
           # the staging tree by build.sh mean the same thing on both sides.
           docker run -d --name bionic -v "$PWD:$PWD" -w "$PWD" \
-            ubuntu:18.04 sleep infinity
+            ubuntu@sha256:152dc042452c496007f07ca9127571cb9c29697f42acbfad72324b2bb2e43c98 \
+            sleep infinity  # ubuntu:18.04
           docker exec bionic apt-get update
           # Bionic predates two of the dev-package renames package-deb uses:
           # libdc1394-dev was libdc1394-22-dev (install.sh carries the same
@@ -265,14 +288,16 @@ jobs:
           fi
 
       - name: Package
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="${{ inputs.tag || github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${TAG#v}"
+          COMMIT=$(git rev-parse HEAD)
           ln -s /opt/arsandbox/bin/sandbox-control stageroot/usr/bin/sandbox-control
           fpm -s dir -t deb -n arsandbox -v "$VERSION+qt5" \
             --maintainer "Domagoj Milardovic <domagoj.milardovic@gmail.com>" \
             --license GPL-2.0 --url https://github.com/${{ github.repository }} \
-            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu 18.04 and 20.04; git ${GITHUB_SHA::7})" \
+            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (Qt 5 build, for Ubuntu 18.04 and 20.04; git ${COMMIT::7})" \
             --depends libudev1 --depends libdbus-1-3 --depends libusb-1.0-0 \
             --depends zlib1g --depends libssl1.1 --depends libpng16-16 \
             --depends libjpeg-turbo8 --depends libtiff5 --depends libasound2 \
@@ -327,13 +352,15 @@ jobs:
         run: STAGEROOT="$PWD/stageroot" bash packaging/build.sh
 
       - name: Package
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="${{ inputs.tag || github.ref_name }}"
-          VERSION="${VERSION#v}"
+          VERSION="${TAG#v}"
+          COMMIT=$(git rev-parse HEAD)
           ln -s /opt/arsandbox/bin/sandbox-control stageroot/usr/bin/sandbox-control
           fpm -s dir -t rpm -n arsandbox -v "$VERSION" \
             --license GPLv2 --url https://github.com/${{ github.repository }} \
-            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (git ${GITHUB_SHA::7})" \
+            --description "Augmented Reality Sandbox: Kinect depth camera + projector topography, prebuilt with Vrui and the Kinect package (git ${COMMIT::7})" \
             --depends systemd-libs --depends dbus-libs --depends libusbx \
             --depends zlib --depends openssl-libs --depends libpng \
             --depends libjpeg-turbo --depends libtiff --depends alsa-lib \
@@ -371,7 +398,7 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
           body: |
-            Built from commit `${{ github.sha }}`. Every package's description
+            Built from commit `${{ needs.source.outputs.commit }}`. Every package's description
             carries the same short hash, and `sandbox-control --version` on an
             installed machine reports the tag it was built from.
 

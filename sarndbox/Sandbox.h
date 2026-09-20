@@ -295,6 +295,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::ProjectorType* calibrationFacade; // Renders the raw 3D video as the backdrop of the calibration view
 	bool calibratingProjector; // Flag whether a projector calibration is in progress
 	std::atomic<bool> backgroundCaptureDone; // Set from the camera thread when the background capture started by startProjectorCalibration has finished
+	bool backgroundCaptureInFlight; // Flag whether a capture requested by startProjectorCalibration has yet to report back; main thread only
 	std::atomic<bool> backgroundReady; // Flag whether background removal is active, i.e., disk extractions can be trusted
 	unsigned int projectorImageSize[2]; // Projector image size in pixels
 	unsigned int tiePointIndex; // Index of the target currently being shown

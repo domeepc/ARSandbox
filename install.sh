@@ -28,8 +28,14 @@ die() { printf '\n\033[31merror: %s\033[0m\n' "$1" >&2; exit 1; }
 # checked in here, so a tampered or truncated download cannot become the
 # release. Digests taken from the upstream archives on 2026-09-20 and checked
 # against the sources this rig was built from.
+# Each digest belongs to one release, so a version override has nothing to
+# check the download against: it would fail as a checksum mismatch, which reads
+# like a tampered mirror rather than "that version is not pinned here". Say so
+# up front instead. packaging/build.sh pins the same pair.
 VRUI_SHA256=8bb1f89a649a1c86ad0fa953a86d737ff4daeccb5fbc46149b696c4ddae16e6c
 KINECT_SHA256=5ec3bd12a958bd9f087eac2464c0bffa433f24a25e939e196b2833dd8d76409e
+[ "$VRUI_VERSION" = 8.0-002 ] || \
+	die "no checked-in SHA-256 for Vrui $VRUI_VERSION; this installer only builds 8.0-002"
 fetch() { # fetch <url> <sha256>: downloads into the current directory, verifies, extracts
 	local f=${1##*/}
 	wget -O "$f" "$1"
@@ -127,6 +133,8 @@ fi
 # --------------------------------------------------------------- Kinect package
 
 KINECT_VERSION=${KINECT_VERSION:-3.10}
+[ "$KINECT_VERSION" = 3.10 ] || \
+	die "no checked-in SHA-256 for the Kinect package $KINECT_VERSION; this installer only builds 3.10"
 
 if [ -x "$PREFIX/bin/KinectUtil" ]; then
 	say "Vrui Kinect package already installed; skipping"
@@ -164,8 +172,15 @@ make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make"
 
 say "Building the control panel"
 cd "$REPO/control-panel"
-# Reported by `sandbox-control --version`, so a machine can say which build it runs.
-SANDBOX_VERSION=$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo dev)
+# Reported by `sandbox-control --version`, so a machine can say which build it
+# runs. A release tarball carries no .git, so the release workflow writes the
+# tag into VERSION beside this script; a repository checkout has no VERSION and
+# git answers instead. Only a source tree that is neither calls itself "dev".
+if [ -s "$REPO/VERSION" ]; then
+	SANDBOX_VERSION=$(head -n1 "$REPO/VERSION")
+else
+	SANDBOX_VERSION=$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo dev)
+fi
 CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DSANDBOX_VERSION="$SANDBOX_VERSION")
 [ -n "${QT_PREFIX:-}" ] && CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
 # The classic in-build-directory invocation rather than -S/-B: the latter

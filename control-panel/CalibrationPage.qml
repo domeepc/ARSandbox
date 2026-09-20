@@ -399,8 +399,10 @@ Item {
                 Note {
                     text: "These are current logical sizes; a screen rotated with xrandr " +
                           "reports its rotated dimensions. Check this matches the projector " +
-                          "before capturing — a wrong size produces a defective calibration " +
-                          "with no error reported. Run it full screen on the projector (F11) " +
+                          "before capturing — a wrong size can produce a defective calibration " +
+                          "that still solves: a poor fit is only reported when the residual " +
+                          "exceeds the threshold, so no complaint here does not mean the size " +
+                          "was right. Run it full screen on the projector (F11) " +
                           "and align a flat circular target with a marked centre."
                 }
 

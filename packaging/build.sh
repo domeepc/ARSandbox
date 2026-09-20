@@ -26,8 +26,15 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 # checked in here, so a tampered or truncated download cannot become the
 # release. Digests taken from the upstream archives on 2026-09-20 and checked
 # against the sources this rig was built from.
+# Same contract as install.sh: a digest belongs to one release, so refuse a
+# version this file has no digest for rather than letting it fail later as a
+# checksum mismatch that reads like a tampered mirror.
 VRUI_SHA256=8bb1f89a649a1c86ad0fa953a86d737ff4daeccb5fbc46149b696c4ddae16e6c
 KINECT_SHA256=5ec3bd12a958bd9f087eac2464c0bffa433f24a25e939e196b2833dd8d76409e
+[ "$VRUI_VERSION" = 8.0-002 ] || \
+	{ echo "error: no checked-in SHA-256 for Vrui $VRUI_VERSION; only 8.0-002 is pinned here" >&2; exit 1; }
+[ "$KINECT_VERSION" = 3.10 ] || \
+	{ echo "error: no checked-in SHA-256 for the Kinect package $KINECT_VERSION; only 3.10 is pinned here" >&2; exit 1; }
 fetch() { # fetch <url> <sha256>: downloads into the current directory, verifies, extracts
 	local f=${1##*/}
 	wget -O "$f" "$1"

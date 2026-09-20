@@ -1097,7 +1097,6 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	diskEverSeenThisCalibration=false;
 	diskAveragingRingSize=0;
 	diskAveragingRingNext=0;
-	backgroundCaptureDone=false;
 	backgroundReady=false;
 	calibratingProjector=true;
 
@@ -1116,9 +1115,28 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	   detected there again. */
 	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
 	if(directCamera!=0)
-		directCamera->captureBackground(60,true,Misc::createFunctionCall(this,&Sandbox::backgroundCaptureCallback));
+		{
+		/* A calibration aborted during those first two seconds leaves its
+		   capture running: the camera thread still owns the callback object and
+		   there is no way to cancel it from here. Starting a second capture on
+		   top of that one would hand the camera a replacement callback while the
+		   first is in flight, and the older completion would then raise the flag
+		   for the newer capture -- switching removal on against a half-built
+		   background, exactly the failure described above. The capture already
+		   running is recording the same sand, so wait for that one instead of
+		   asking for another. */
+		if(!backgroundCaptureInFlight)
+			{
+			backgroundCaptureDone=false;
+			backgroundCaptureInFlight=true;
+			directCamera->captureBackground(60,true,Misc::createFunctionCall(this,&Sandbox::backgroundCaptureCallback));
+			}
+		}
 	else
+		{
+		backgroundCaptureDone=false;
 		backgroundReady=true; // Nothing to remove from a recorded or remote stream
+		}
 
 	diskExtractor->startStreaming(Misc::createFunctionCall(this,&Sandbox::diskExtractionCallback));
 
@@ -1877,7 +1895,7 @@ const double Sandbox::captureRunTimeout=3.0;
 	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0),
 	 pendingPlaneValid(false),numPendingCorners(0),
 	 scaleFactor(1.0),
-	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),backgroundCaptureDone(false),backgroundReady(false),
+	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),backgroundCaptureDone(false),backgroundCaptureInFlight(false),backgroundReady(false),
 	 tiePointIndex(0),numTiePoints(0),haveDisk(false),
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
 	 capturingTiePoint(false),tiePointCaptureDeadline(0.0),lastCandidateCount(0),
@@ -3065,6 +3083,14 @@ bool isToken(const std::string& token,const char* pattern)
 	   newer one: */
 	if(calibratingProjector)
 		calibrationFacade->updateFrames();
+
+	/* A capture reports back on the camera thread; retiring it here, on the main
+	   thread, is what lets the next calibration ask for a fresh one. Done
+	   unconditionally because a capture can outlive the calibration that started
+	   it, and one left marked in flight would keep every later calibration on
+	   this stale background. */
+	if(backgroundCaptureInFlight&&backgroundCaptureDone)
+		backgroundCaptureInFlight=false;
 
 	/* The background capture started by startProjectorCalibration has finished:
 	   now, and not before, blank the sand out of the stream and let the operator
