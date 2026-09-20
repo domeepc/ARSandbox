@@ -17,8 +17,9 @@ This path is **compiled into the binary** — the makefile bakes
 `$(INSTALLDIR)/etc/SARndbox-2.8` into `Config.h` as `CONFIG_CONFIGDIR` at build
 time. It is not searched for at runtime and no environment variable overrides
 it, so a binary built in one tree keeps reading that tree's config even if it is
-copied elsewhere. Relative file names given on the command line (`-uhm`, `-fpv`,
-`-slf`) are resolved against this directory; absolute ones are used as given.
+copied elsewhere. Relative file names given to `-uhm` and `-fpv` are resolved
+against this directory; `-slf` is opened as given, so a relative layout path is
+relative to the working directory the sandbox was started from.
 
 | File | Written by | Read | Purpose |
 |------|-----------|------|---------|
@@ -89,7 +90,12 @@ corresponding key from both `LiveSettings.cfg` and the panel's `.conf`.
 
 ## Kinect and Vrui
 
-`/usr/local/etc/Vrui-8.0/`
+`/usr/local/etc/Vrui-8.0/` for a from-source install; `/opt/arsandbox/etc/Vrui-8.0/`
+for a packaged one. The panel looks for `Kinect-3.10/` under `$SANDBOX_DIR/etc/Vrui-8.0`
+first and falls back to `/usr/local`. The package's post-install hook makes both
+this directory and `SARndbox-2.8/` writable by everyone, for the same reason
+`install.sh` chowns them: the calibrations are written by the user running the
+sandbox, not by root.
 
 | File | Written by | Purpose |
 |------|-----------|---------|

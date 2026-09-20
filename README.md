@@ -47,6 +47,13 @@ with `arsandbox` and `sandbox-control` on your PATH. Built and packaged by
 `packaging/build.sh` in CI; not hardware-tested, same caveat as everything
 else here without a Kinect attached.
 
+`sandbox-control --version` prints the tag (or `git describe`) a build came
+from. Worth checking on a machine that once ran `install.sh`: that leaves a
+`sandbox-control` and `KinectUtil` in `/usr/local/bin`, ahead of the package's
+`/usr/bin` on PATH. The `arsandbox` launcher and the sandbox's right-click
+prefer the copies beside the sandbox binary, so they are not fooled, but a
+panel started by hand from a terminal may be the old one.
+
 Requirements: **Linux**, a Kinect v1 (Xbox 360), a projector above the box, and
 Qt 6.4+ for the panel. See [macOS](#macos).
 
@@ -99,12 +106,16 @@ named after the serial number and does not transfer to another Kinect.
 
 Press **Grab depth image** to pull the current depth frame into the panel, then:
 
-1. **Drag a rectangle** over the flat sand, staying clear of the box walls. The
-   plane is fitted to that region only. This is the part that matters: a fit to
-   the whole depth image cannot tell the sand from the rest of the room and
-   settles on whatever surface dominates the view.
-2. **Click the four corners** of the sand, in this order: bottom left, bottom
-   right, upper left, upper right. Each click reports one 3D position.
+1. Lay a **flat plate** on the sand and **drag a rectangle** over it, staying
+   clear of the box walls. The plane is fitted to that region only. This is the
+   part that matters: loose sand is never flat enough to be its own reference,
+   and a fit to the whole depth image cannot tell the sand from the rest of the
+   room.
+2. Take the plate out, grab the depth image again, and **drag over the bare
+   sand** to set its extents. The four corners of that rectangle become the
+   box corners; **click** any of them afterwards to re-pick it by hand, in the
+   order bottom left, bottom right, upper left, upper right — the click replaces
+whichever corner it lands nearest to.
 3. Press **Write BoxLayout.txt**.
 
 Nothing is written until that last press, so a misclick costs you a retry rather
@@ -132,21 +143,26 @@ against the projector's own specification, because a wrong pixel size produces a
 defective calibration with no error reported. A screen rotated with `xrandr`
 reports its rotated dimensions.
 
-Press **Start**. The sandbox switches to a straight-down view of the box for
-the duration: the current 3D scan as a yellow facade, a white cross marking
-where to place the target, and — whenever the extractor is currently tracking
+Press **Start**. For the first two seconds the sandbox records the bare sand
+as its background — keep hands and the target out of view until the panel
+says so; anything in view meanwhile becomes part of the background and can no
+longer be detected there. It then switches to a straight-down view of the box
+for the duration: the current 3D scan as a yellow facade, a white cross marking
+where to hold the target, and — whenever the extractor is currently tracking
 one — the detected disk itself drawn in blue at its measured position, tilt and
-radius. The background is removed for this view, since otherwise a target held
-close to the sand or over a mound would merge into the surrounding surface and
-fail detection.
+radius. The cross itself never changes colour; the blue disk is the cue.
 
-Put a flat circular target with a marked centre — a CD with a paper disk glued
-on works — flat on the sand with its centre on the cross, take your hands out
-of view, and press **Capture this point** once the blue disk appears there.
-Repeat for all 12 points. A set of 12 points that vary in height by less than
-10cm is rejected outright rather than accepted with a good-looking residual —
-a projective camera cannot be recovered from points that are all roughly in one
-plane, even though the fit still passes through every one of them.
+Hold a flat circular target with a marked centre — a CD with a paper disk glued
+on works — **above** the sand, facing the camera, with its centre on the cross.
+It must not rest on the sand: the sand is background and is removed from the
+image, and the disk with it. Hold it still, and press **Capture this point**
+once the blue disk appears; each capture averages about two seconds of frames.
+Repeat for every point (12 by default; the **Calibration points** dropdown
+offers 6 to 24), varying the height between them. A set of points
+that vary in height by less than 10cm is rejected outright rather than accepted
+with a good-looking residual — a projective camera cannot be recovered from
+points that are all roughly in one plane, even though the fit still passes
+through every one of them.
 
 The RMS residual in projector pixels is reported at the end; that is the honest
 measure of whether the capture was any good. The previous matrix is kept as

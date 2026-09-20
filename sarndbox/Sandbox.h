@@ -68,6 +68,7 @@ class Lightsource;
 }
 namespace Kinect {
 class Camera;
+class DirectFrameSource;
 }
 class FrameFilter;
 class DepthImageRenderer;
@@ -215,8 +216,10 @@ class Sandbox:public Vrui::Application,public GLObject
 	Threads::TripleBuffer<Kinect::FrameBuffer> filteredFrames; // Triple buffer for incoming filtered depth frames
 	DepthImageRenderer* depthImageRenderer; // Object managing the current filtered depth image
 	Point basePlaneCorners[4]; // Corners of the sandbox area, as read from the layout file
+	Point diskFilterCorners[4]; // Same corners in the unscaled (raw camera-space cm) units that DiskExtractor reports disk centers in, used by isOverSandbox
 	ONTransform boxTransform; // Transformation from camera space to baseplane space (x along long sandbox axis, z up)
 	Scalar boxSize; // Radius of sphere around sandbox area
+	double scaleFactor; // Scale factor from raw camera-space cm to the simulation's units (scaleFactor/100)
 	Box bbox; // Bounding box around all potential surfaces
 	WaterTable2* waterTable; // Water flow simulation object
 	double waterSpeed; // Relative speed of water flow simulation
@@ -291,6 +294,8 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::DiskExtractor* diskExtractor; // Finds the calibration target in the depth stream
 	Kinect::ProjectorType* calibrationFacade; // Renders the raw 3D video as the backdrop of the calibration view
 	bool calibratingProjector; // Flag whether a projector calibration is in progress
+	std::atomic<bool> backgroundCaptureDone; // Set from the camera thread when the background capture started by startProjectorCalibration has finished
+	std::atomic<bool> backgroundReady; // Flag whether background removal is active, i.e., disk extractions can be trusted
 	unsigned int projectorImageSize[2]; // Projector image size in pixels
 	unsigned int tiePointIndex; // Index of the target currently being shown
 	unsigned int numTiePoints; // Number of targets in the sequence
@@ -322,6 +327,7 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::FrameBuffer averageDepthFrames(const Kinect::FrameBuffer& newFrame); // Pushes newFrame into the ring and returns the pixelwise average for disk extraction
 
 	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
+	void backgroundCaptureCallback(Kinect::DirectFrameSource& source); // Called from the camera thread when the calibration background has been captured
 	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
 	void facadeMeshCallback(const Kinect::MeshBuffer& meshBuffer); // Wakes the main thread when the facade has a new mesh
 	#endif

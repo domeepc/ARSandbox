@@ -17,6 +17,9 @@ restarted independently of the other.
 #include <QUrl>
 
 #include <csignal>
+#include <cerrno>
+#include <cstring>
+#include <QDebug>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -44,6 +47,10 @@ restarted independently of the other.
 
 	QGuiApplication app(argc,argv);
 	app.setApplicationName("SARndbox Control Panel");
+	/* Baked in by CMake from git describe (or the tag the package was built
+	   from), so "sandbox-control --version" says which build is actually
+	   running -- the answer to "is this the package or the old /usr/local one". */
+	app.setApplicationVersion(SANDBOX_VERSION);
 	/* QSettings (behind QML's Settings type, used to persist slider positions)
 	   needs an organization identifier to pick a config file path: */
 	app.setOrganizationName("SARndbox");
@@ -51,6 +58,7 @@ restarted independently of the other.
 	QCommandLineParser parser;
 	parser.setApplicationDescription("Control panel for the Augmented Reality Sandbox");
 	parser.addHelpOption();
+	parser.addVersionOption();
 	QCommandLineOption pipeOption(QStringList()<<"p"<<"pipe",
 		"Path of the SARndbox control FIFO (must match the sandbox's -cp option).",
 		"path","/tmp/sarndbox.pipe");
@@ -147,16 +155,22 @@ restarted independently of the other.
 	   The lock is released by the kernel when this process exits, so lockFd is
 	   deliberately left open for the lifetime of the program. O_CLOEXEC keeps the
 	   helpers started with QProcess (RawKinectViewer and friends) from holding
-	   the lock after the panel is gone. If the lock file cannot be opened at all,
-	   carry on unguarded rather than refusing to start. */
+	   the lock after the panel is gone. If the lock file cannot be opened or
+	   locked at all (ENOLCK, EOPNOTSUPP on an odd /tmp), carry on unguarded
+	   rather than refusing to start; only actual contention exits. */
 	const QString lockPath=parser.value(pipeOption)+".lock";
 	const int lockFd=::open(lockPath.toLocal8Bit().constData(),O_RDWR|O_CREAT|O_CLOEXEC,0666);
 	if(lockFd>=0&&::flock(lockFd,LOCK_EX|LOCK_NB)<0)
 		{
-		/* A panel is already listening on this pipe. It answers the sandbox's
-		   showPanel event, so exiting quietly leaves the user with a working
-		   panel rather than two half-fed ones. */
-		return 0;
+		if(errno==EWOULDBLOCK)
+			{
+			/* A panel is already listening on this pipe. It answers the sandbox's
+			   showPanel event, so exiting quietly leaves the user with a working
+			   panel rather than two half-fed ones. */
+			return 0;
+			}
+		qWarning()<<"Cannot lock"<<lockPath<<":"<<strerror(errno)
+		          <<"- starting anyway, without the single-panel guard";
 		}
 
 	Pipe pipe(parser.value(pipeOption));

@@ -3,14 +3,10 @@ Calibration - Reports the state of the three calibration steps, checks the
 measured base plane for plausibility, and launches the existing Vrui tools
 that perform the measurements.
 
-This deliberately does NOT reimplement the calibration capture itself.
-CalibrateProjector has to run full screen on the projector, read the Kinect
-depth stream, detect a physical disk target by blob extraction and solve for
-the projective transform; rebuilding that in QML would mean rebuilding the
-precision-critical part of the system for no gain. What is actually awkward
-about calibration is remembering the step order, supplying the correct
-projector pixel size, and noticing when a measurement came out wrong -- so
-that is what this covers.
+The capture itself lives in the sandbox (driven over the control pipe); this
+side only reports step state, checks the measured plane for plausibility,
+lists the screens so the right projector size is sent, and starts KinectUtil
+for the camera intrinsics.
 ***********************************************************************/
 
 #ifndef CALIBRATION_H
@@ -81,8 +77,6 @@ class Calibration:public QObject
 
 	Q_INVOKABLE void refresh();
 	Q_INVOKABLE bool runKinectUtil();
-	Q_INVOKABLE bool runRawKinectViewer();
-	Q_INVOKABLE bool runCalibrateProjector(int width,int height);
 
 	signals:
 	void changed();
@@ -91,6 +85,7 @@ class Calibration:public QObject
 	private:
 	bool launch(const QString& program,const QStringList& arguments);
 	void readBoxLayout();
+	QString kinectConfigDir() const;
 
 	QString sandboxDir;
 

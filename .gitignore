@@ -25,3 +25,6 @@ sarndbox/etc/SARndbox-2.8/ProjectorMatrix.dat
 # saveConfigSetting()'s comment in Sandbox.cpp for why this is a separate file
 # from SARndbox.cfg rather than entries in it.
 sarndbox/etc/SARndbox-2.8/LiveSettings.cfg
+
+# IDE state
+.idea/

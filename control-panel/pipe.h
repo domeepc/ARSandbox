@@ -7,12 +7,8 @@ sandbox is launched, and the writer must hold its end open for the whole
 session: opening and closing per command would make the reader see repeated
 end-of-file.
 
-Communication is one-way. The sandbox never reports its state back, so this
-panel can only show what it last sent.
-ponytail: the ceiling is that the panel's values drift from the sandbox's
-actual state if someone also uses the in-application GLMotif dialogs. The
-upgrade path is a second FIFO carrying state back, which is not worth
-building until that drift actually becomes a problem in use.
+The sandbox reports back on a second FIFO at the same path with ".status"
+appended: periodic state lines plus one-shot events, parsed by readStatus().
 ***********************************************************************/
 
 #ifndef PIPE_H

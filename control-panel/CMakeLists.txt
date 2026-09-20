@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
+# Shown by `sandbox-control --version`. install.sh and packaging/build.sh pass
+# `git describe`; a bare cmake run gets "dev".
+set(SANDBOX_VERSION "dev" CACHE STRING "Version string reported by --version")
+
 # Qt is installed through the Qt online installer and is not on the default
 # search path; point CMAKE_PREFIX_PATH at it, or pass -DCMAKE_PREFIX_PATH on the
 # command line to use a different Qt.
@@ -40,6 +44,7 @@ if(Qt6_FOUND)
 	)
 
 	target_link_libraries(sandbox-control PRIVATE Qt6::Quick)
+	target_compile_definitions(sandbox-control PRIVATE SANDBOX_VERSION="${SANDBOX_VERSION}")
 else()
 	# 5.9 rather than something newer: it's what Ubuntu 18.04 ships, and the
 	# QML no longer uses anything past it now that inline `component` blocks
@@ -63,4 +68,5 @@ else()
 	)
 
 	target_link_libraries(sandbox-control PRIVATE Qt5::Quick)
+	target_compile_definitions(sandbox-control PRIVATE SANDBOX_VERSION="${SANDBOX_VERSION}")
 endif()

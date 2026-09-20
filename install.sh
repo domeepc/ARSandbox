@@ -24,6 +24,19 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 die() { printf '\n\033[31merror: %s\033[0m\n' "$1" >&2; exit 1; }
 
+# Downloads over HTTPS and refuses an archive whose SHA-256 is not the one
+# checked in here, so a tampered or truncated download cannot become the
+# release. Digests taken from the upstream archives on 2026-09-20 and checked
+# against the sources this rig was built from.
+VRUI_SHA256=8bb1f89a649a1c86ad0fa953a86d737ff4daeccb5fbc46149b696c4ddae16e6c
+KINECT_SHA256=5ec3bd12a958bd9f087eac2464c0bffa433f24a25e939e196b2833dd8d76409e
+fetch() { # fetch <url> <sha256>: downloads into the current directory, verifies, extracts
+	local f=${1##*/}
+	wget -O "$f" "$1"
+	echo "$2  $f" | sha256sum -c - || { echo "error: checksum mismatch for $f" >&2; exit 1; }
+	tar xzf "$f"
+}
+
 [ "$(id -u)" -eq 0 ] && die "run as a normal user; the script calls sudo where it needs to"
 
 # ---------------------------------------------------------------- dependencies
@@ -82,7 +95,7 @@ else
 	cd "$SRCDIR"
 
 	if [ ! -d "Vrui-$VRUI_VERSION" ]; then
-		wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Vrui/Vrui-$VRUI_VERSION.tar.gz" | tar xz
+		fetch "https://web.cs.ucdavis.edu/~okreylos/ResDev/Vrui/Vrui-$VRUI_VERSION.tar.gz" "$VRUI_SHA256"
 	else
 		echo "source directory already present; not re-extracting over local changes"
 	fi
@@ -121,7 +134,7 @@ else
 	say "Building the Vrui Kinect package"
 	cd "$SRCDIR"
 	if [ ! -d "Kinect-$KINECT_VERSION" ]; then
-		wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" | tar xz
+		fetch "https://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" "$KINECT_SHA256"
 	fi
 	cd "Kinect-$KINECT_VERSION"
 	make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make"
@@ -151,7 +164,9 @@ make -j"$JOBS" VRUI_MAKEDIR="$PREFIX/share/Vrui-$VRUI_MAJOR/make"
 
 say "Building the control panel"
 cd "$REPO/control-panel"
-CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release)
+# Reported by `sandbox-control --version`, so a machine can say which build it runs.
+SANDBOX_VERSION=$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo dev)
+CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DSANDBOX_VERSION="$SANDBOX_VERSION")
 [ -n "${QT_PREFIX:-}" ] && CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
 # The classic in-build-directory invocation rather than -S/-B: the latter
 # needs CMake 3.13+, which Ubuntu 18.04's packaged CMake predates. Likewise

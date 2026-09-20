@@ -704,14 +704,23 @@ void Sandbox::extractPoint(unsigned int x,unsigned int y)
 		return;
 		}
 
-	/* Wrap rather than ignore, so clicking after the region filled the corners in
-	   replaces them one by one instead of doing nothing. */
+	/* With all four corners set, a click re-picks the corner nearest to it. The
+	   old behaviour wrapped back to corner 1, which threw the other three away
+	   and left nothing to write. */
+	unsigned int slot=numPendingCorners;
 	if(numPendingCorners>=4)
-		numPendingCorners=0;
-	pendingCorners[numPendingCorners++]=p;
+		{
+		slot=0;
+		for(unsigned int i=1;i<4;++i)
+			if(Geometry::sqrDist(p,pendingCorners[i])<Geometry::sqrDist(p,pendingCorners[slot]))
+				slot=i;
+		}
+	else
+		++numPendingCorners;
+	pendingCorners[slot]=p;
 
 	std::ostringstream result;
-	result<<"pointExtracted "<<numPendingCorners<<" "<<p[0]<<" "<<p[1]<<" "<<p[2];
+	result<<"pointExtracted "<<numPendingCorners<<" "<<p[0]<<" "<<p[1]<<" "<<p[2]<<" "<<slot;
 	sendEvent(result.str().c_str());
 	std::cout<<"3D position: ("<<p[0]<<", "<<p[1]<<", "<<p[2]<<")"<<std::endl;
 	}
@@ -816,15 +825,28 @@ void Sandbox::writeSandboxLayout(void)
 	for(int i=0;i<4;++i)
 		corners[i]=pendingPlane.project(pendingCorners[i]);
 
+	/* The depth projection the corners were unprojected through is scaled into
+	   simulation units, but the layout file is read as raw camera-space cm: */
+	Plane filePlane(pendingPlane.getNormal(),pendingPlane.getOffset()/scaleFactor);
+	Point fileCorners[4];
+	for(int i=0;i<4;++i)
+		for(int j=0;j<3;++j)
+			fileCorners[i][j]=corners[i][j]/scaleFactor;
+
 	try
 		{
 		rename(sandboxLayoutFileName.c_str(),(sandboxLayoutFileName+".bak").c_str());
 
 		std::ofstream layout(sandboxLayoutFileName.c_str());
-		layout<<Misc::ValueCoder<Plane>::encode(pendingPlane)<<std::endl;
+		layout<<Misc::ValueCoder<Plane>::encode(filePlane)<<std::endl;
 		for(int i=0;i<4;++i)
-			layout<<Misc::ValueCoder<Point>::encode(corners[i])<<std::endl;
+			layout<<Misc::ValueCoder<Point>::encode(fileCorners[i])<<std::endl;
 		layout.close();
+		/* ofstream never throws on its own; a read-only config directory (a
+		   packaged install under /opt) otherwise reported "written" and restarted
+		   into the old layout: */
+		if(!layout)
+			throw std::runtime_error(strerror(errno));
 		}
 	catch(const std::runtime_error& err)
 		{
@@ -890,22 +912,25 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	   rim, the operator, and the far side of the room. */
 	const double marginCm=5.0;
 
-	Point centroid=Geometry::mid(Geometry::mid(basePlaneCorners[0],basePlaneCorners[1]),
-	                             Geometry::mid(basePlaneCorners[2],basePlaneCorners[3]));
+	/* p arrives from DiskExtractor in unscaled camera-space cm, so the footprint
+	   it is tested against has to be in the same unscaled units -- not
+	   basePlaneCorners, which is scaled by scaleFactor for rendering/simulation. */
+	Point centroid=Geometry::mid(Geometry::mid(diskFilterCorners[0],diskFilterCorners[1]),
+	                             Geometry::mid(diskFilterCorners[2],diskFilterCorners[3]));
 
 	/* Corner order is the order they are measured and written in: bottom left,
 	   bottom right, upper left, upper right -- so the quad's cycle is 0,1,3,2. */
 	static const int cycle[4][2]={{0,1},{1,3},{3,2},{2,0}};
-	Vector normal=Geometry::cross(basePlaneCorners[1]-basePlaneCorners[0],
-	                              basePlaneCorners[2]-basePlaneCorners[0]);
+	Vector normal=Geometry::cross(diskFilterCorners[1]-diskFilterCorners[0],
+	                              diskFilterCorners[2]-diskFilterCorners[0]);
 	if(normal.mag()<=0.0)
 		return true; // Degenerate layout: no usable footprint, so do not reject anything on its behalf
 	normal.normalize();
 
 	for(int i=0;i<4;++i)
 		{
-		const Point& a=basePlaneCorners[cycle[i][0]];
-		Vector edge=basePlaneCorners[cycle[i][1]]-a;
+		const Point& a=diskFilterCorners[cycle[i][0]];
+		Vector edge=diskFilterCorners[cycle[i][1]]-a;
 		Vector inward=Geometry::cross(normal,edge);
 		if(inward.mag()<=0.0)
 			continue;
@@ -950,6 +975,11 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	   blob outside the sandbox does not veto an otherwise unambiguous frame. */
 	const Kinect::DiskExtractor::Disk* candidate=0;
 	unsigned int candidateCount=0;
+
+	/* Until the background is captured the sand itself is still in the frames,
+	   so anything extracted now is either the sand or a disk merged into it: */
+	if(!backgroundReady)
+		return;
 
 	for(Kinect::DiskExtractor::DiskList::const_iterator dIt=disks.begin();dIt!=disks.end();++dIt)
 		{
@@ -1067,6 +1097,8 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	diskEverSeenThisCalibration=false;
 	diskAveragingRingSize=0;
 	diskAveragingRingNext=0;
+	backgroundCaptureDone=false;
+	backgroundReady=false;
 	calibratingProjector=true;
 
 	/* Blank the sand out of the depth stream for the duration. The extractor
@@ -1075,19 +1107,33 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 	   -- which is why detection works in some spots and not others. Removal
 	   makes the held target the only foreground, as the standalone
 	   CalibrateProjector does. Costs the first ~2s to capture the sand, and
-	   means the target has to be held above the surface, not laid on it. */
+	   means the target has to be held above the surface, not laid on it.
+	   Removal is only switched on once the capture has completed (see frame()):
+	   the Kinect package enables it the moment a buffer exists, so turning it on
+	   here ran removal against a half-built background -- and anything in view
+	   during those two seconds, such as the disk already being placed on the
+	   first crosshair, was baked into the background and could never be
+	   detected there again. */
 	Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
 	if(directCamera!=0)
-		{
-		directCamera->captureBackground(60,true);
-		directCamera->setRemoveBackground(true);
-		}
+		directCamera->captureBackground(60,true,Misc::createFunctionCall(this,&Sandbox::backgroundCaptureCallback));
+	else
+		backgroundReady=true; // Nothing to remove from a recorded or remote stream
 
 	diskExtractor->startStreaming(Misc::createFunctionCall(this,&Sandbox::diskExtractionCallback));
 
 	std::ostringstream started;
 	started<<"calibrationStarted projector "<<numTiePoints;
 	sendEvent(started.str().c_str());
+	if(!backgroundReady)
+		sendEvent("calibrationBackground projector capturing");
+	}
+
+void Sandbox::backgroundCaptureCallback(Kinect::DirectFrameSource&)
+	{
+	/* Camera thread: only flag it; frame() enables removal and tells the panel. */
+	backgroundCaptureDone=true;
+	Vrui::requestUpdate();
 	}
 
 /**
@@ -1111,6 +1157,12 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 		}
 	if(capturingTiePoint)
 		return; // Already collecting for this target; a second press is not a second point
+
+	if(!backgroundReady)
+		{
+		sendEvent("calibrationBackground projector capturing");
+		return;
+		}
 
 	if(!haveDisk)
 		{
@@ -1447,6 +1499,10 @@ void Sandbox::facadeMeshCallback(const Kinect::MeshBuffer&)
 		{
 		rsIt->loadProjectorTransform(CONFIG_DEFAULTPROJECTIONMATRIXFILENAME);
 		rsIt->fixProjectorView=rsIt->projectorTransformValid;
+		/* The file is in raw camera-space cm; the constructor scales the
+		   translation column into simulation units on load, so do the same here: */
+		for(int i=0;i<4;++i)
+			rsIt->projectorTransform.getMatrix()(i,3)*=scaleFactor;
 		}
 
 	/* A residual this large means the solve did not really fit the captures, even
@@ -1526,6 +1582,25 @@ void Sandbox::showPanelCallback(Misc::CallbackData* cbData)
 		{
 		if(fork()==0)
 			{
+			/* A bare command name is looked up beside this binary first: a
+			   from-source install leaves an older sandbox-control in
+			   /usr/local/bin, which precedes the package's /usr/bin on PATH, so
+			   a plain execlp started stale code next to a freshly packaged
+			   sandbox. <installdir> is CONFIG_CONFIGDIR minus /etc/SARndbox-x.y;
+			   the in-tree build keeps its panel under control-panel/build. */
+			if(controlPanelCommand.find('/')==std::string::npos)
+				{
+				std::string installDir=CONFIG_CONFIGDIR;
+				std::string::size_type etc=installDir.rfind("/etc/");
+				if(etc!=std::string::npos)
+					installDir.erase(etc);
+				const std::string candidates[2]={installDir+"/bin/"+controlPanelCommand,
+				                                 installDir+"/../control-panel/build/"+controlPanelCommand};
+				for(int i=0;i<2;++i)
+					if(access(candidates[i].c_str(),X_OK)==0)
+						execl(candidates[i].c_str(),candidates[i].c_str(),
+						      "-p",controlPipeName.c_str(),(char*)0);
+				}
 			execlp(controlPanelCommand.c_str(),controlPanelCommand.c_str(),
 			       "-p",controlPipeName.c_str(),(char*)0);
 			std::cerr<<"Unable to start control panel "<<controlPanelCommand<<std::endl;
@@ -1801,7 +1876,9 @@ const double Sandbox::captureRunTimeout=3.0;
 	 waterSpeedSlider(0),waterMaxStepsSlider(0),frameRateTextField(0),waterAttenuationSlider(0),
 	 controlPipeFd(-1),statusPipeFd(-1),nextStatusTime(0.0),
 	 pendingPlaneValid(false),numPendingCorners(0),
-	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),tiePointIndex(0),numTiePoints(0),haveDisk(false),
+	 scaleFactor(1.0),
+	 diskExtractor(0),calibrationFacade(0),calibratingProjector(false),backgroundCaptureDone(false),backgroundReady(false),
+	 tiePointIndex(0),numTiePoints(0),haveDisk(false),
 	 diskEverSeenThisCalibration(false),lastDiskTime(0.0),
 	 capturingTiePoint(false),tiePointCaptureDeadline(0.0),lastCandidateCount(0),
 	 diskAveragingRingSize(0),diskAveragingRingNext(0)
@@ -2267,8 +2344,16 @@ const double Sandbox::captureRunTimeout=3.0;
 			elevationRange.intersectInterval(mapRange);
 			}
 	
+	/* diskExtractor was already built from the unscaled cameraIps above, so the
+	   disk centers it reports stay in raw camera-space cm regardless of
+	   scaleFactor. Snapshot the corners in that same unscaled space now, before
+	   they are scaled below, so isOverSandbox can compare like with like. */
+	for(int i=0;i<4;++i)
+		diskFilterCorners[i]=basePlaneCorners[i];
+
 	/* Scale all sizes by the given scale factor: */
 	double sf=scale/100.0; // Scale factor from cm to final units
+	scaleFactor=sf;
 	for(int i=0;i<3;++i)
 		for(int j=0;j<4;++j)
 			cameraIps.depthProjection.getMatrix()(i,j)*=sf;
@@ -2321,6 +2406,18 @@ const double Sandbox::captureRunTimeout=3.0;
 	depthImageRenderer->setBasePlane(basePlane);
 	
 	updateBoxTransform(basePlane);
+
+	/* Start the layout capture from the layout just loaded, so a corner can be
+	   re-picked and written straight away. Every write restarts the process,
+	   and an empty capture after that restart meant the panel's re-pick landed
+	   as corner 1 of a new set and Write then failed with noPlane -- the file
+	   silently stayed as it was. Scaled units, the same ones unprojectPixel
+	   yields; writeSandboxLayout divides back out. */
+	pendingPlane=basePlane;
+	pendingPlaneValid=true;
+	for(int i=0;i<4;++i)
+		pendingCorners[i]=basePlaneCorners[i];
+	numPendingCorners=4;
 	
 	/* Calculate a bounding box around all potential surfaces: */
 	bbox=Box::empty;
@@ -2476,6 +2573,7 @@ Sandbox::~Sandbox(void)
 	{
 	/* Stop streaming depth frames: */
 	camera->stopStreaming();
+	delete diskExtractor;
 	delete camera;
 	delete frameFilter;
 	
@@ -2492,6 +2590,8 @@ Sandbox::~Sandbox(void)
 	delete waterControlDialog;
 	
 	close(controlPipeFd);
+	if(statusPipeFd>=0)
+		close(statusPipeFd);
 	}
 
 void Sandbox::toolDestructionCallback(Vrui::ToolManager::ToolDestructionCallbackData* cbData)
@@ -2965,6 +3065,18 @@ bool isToken(const std::string& token,const char* pattern)
 	   newer one: */
 	if(calibratingProjector)
 		calibrationFacade->updateFrames();
+
+	/* The background capture started by startProjectorCalibration has finished:
+	   now, and not before, blank the sand out of the stream and let the operator
+	   bring the target in. */
+	if(calibratingProjector&&!backgroundReady&&backgroundCaptureDone)
+		{
+		Kinect::DirectFrameSource* directCamera=dynamic_cast<Kinect::DirectFrameSource*>(camera);
+		if(directCamera!=0)
+			directCamera->setRemoveBackground(true);
+		backgroundReady=true;
+		sendEvent("calibrationBackground projector ready");
+		}
 
 	/* Pick up the newest extracted calibration target, if any. The extractor only
 	   reports when it finds a disk, never when one leaves, so presence is judged

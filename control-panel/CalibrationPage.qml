@@ -25,6 +25,15 @@ Item {
         property real seaLevel: 0
     }
 
+    // How many targets a projector calibration collects. The sandbox lays them
+    // out on a 3-column grid and needs at least 6; more points average out
+    // more noise at the cost of holding the disk still that many more times.
+    Settings {
+        id: persistedProjector
+        category: "projector"
+        property int pointIndex: 2
+    }
+
     Connections {
         target: pipe
         // Classic onSignalName: {} form - see Main.qml's Connections for why.
@@ -36,6 +45,7 @@ Item {
 
     // Projector calibration progress, driven by the sandbox's status messages.
     property bool capturing: false
+    property int pointCount: 12
     property string projectorState: ""
     // Whether projectorState is reporting a problem rather than progress, so it
     // can be shown as one instead of reading like a status line.
@@ -75,8 +85,6 @@ Item {
                    "sandbox are probably different versions."
         return "failed: " + f.join(" ")
     }
-    property bool capturingCorners: false
-    property string cornerState: ""
     property bool projectorView: false
 
     Connections {
@@ -87,39 +95,26 @@ Item {
             if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
                 key !== "calibrationDone" && key !== "calibrationAborted" &&
                 key !== "calibrationFailed" && key !== "calibrationNoTarget" &&
-                key !== "calibrationRejected" && key !== "calibrationCapturing" &&
+                key !== "calibrationCapturing" && key !== "calibrationBackground" &&
                 key !== "calibrationAmbiguous" && key !== "calibrationLostTarget") return
 
             var f = value.split(" ")
-
-            if (f[0] === "corners") {
-                if (key === "calibrationStarted") {
-                    dialog.capturingCorners = true
-                    dialog.cornerState = "place the disk on the " + f.slice(2).join(" ") + " corner"
-                } else if (key === "calibrationProgress") {
-                    dialog.cornerState = "corner " + (parseInt(f[1]) + 1) + " of 4 \u2014 " +
-                                         f.slice(3).join(" ")
-                } else if (key === "calibrationNoTarget") {
-                    dialog.cornerState = "target not visible \u2014 place the disk flat on the corner"
-                } else if (key === "calibrationDone") {
-                    dialog.capturingCorners = false
-                    dialog.cornerState = "measured " + parseFloat(f[2]).toFixed(1) + " x " +
-                                         parseFloat(f[3]).toFixed(1) + " cm"
-                    calibration.refresh()
-                } else {
-                    dialog.capturingCorners = false
-                    dialog.cornerState = key === "calibrationRejected"
-                        ? "rejected: a corner was not on the sand" : ""
-                }
-                return
-            }
-
             if (f[0] !== "projector") return
 
             if (key === "calibrationStarted") {
                 dialog.capturing = true
                 dialog.projectorFailed = false
+                dialog.pointCount = parseInt(f[1])
                 dialog.projectorState = "point 1 of " + f[1]
+            } else if (key === "calibrationBackground") {
+                // The sandbox records the bare sand for ~2 s before it can tell
+                // the target from it. Anything in view meanwhile is baked into
+                // that background and becomes undetectable, so say so.
+                dialog.capturing = true
+                dialog.projectorFailed = false
+                dialog.projectorState = f[1] === "ready"
+                    ? "point 1 of " + dialog.pointCount + " — bring the target in"
+                    : "capturing the background — keep hands and the target out of view for 2 s"
             } else if (key === "calibrationProgress") {
                 // Also latches capturing on, not just the point number: this is
                 // the only message a panel that started or reconnected part-way
@@ -333,7 +328,7 @@ Item {
                             return
                         }
                         pipe.send("calibrateProjector start " +
-                                  screen.width + " " + screen.height + " 12")
+                                  screen.width + " " + screen.height + " " + pointsBox.currentText)
                     }
                 }
 
@@ -349,10 +344,11 @@ Item {
 
                 Note {
                     visible: dialog.capturing
-                    text: "The sandbox is showing a crosshair on the projection. Place the " +
-                          "disk target so its centre is on the crosshair and lies flat on the " +
-                          "sand, take your hands out of view, then capture. The crosshair " +
-                          "turns green when the target has been found."
+                    text: "The sandbox is showing a white crosshair on the projection. Hold " +
+                          "the disk target above the sand, facing the camera, with its centre " +
+                          "on the crosshair — not resting on the sand, which is removed as " +
+                          "background. Vary the height between points. When the target is " +
+                          "detected it is drawn as a blue disk on the projection; then capture."
                 }
 
                 RowLayout {
@@ -365,6 +361,19 @@ Item {
                         implicitHeight: dialog.touchTarget
                         // On a two-display desk the projector is normally secondary.
                         currentIndex: count - 1
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "Calibration points"; font.pixelSize: 15; Layout.fillWidth: true }
+                    ComboBox {
+                        id: pointsBox
+                        model: ["6", "9", "12", "15", "18", "24"]
+                        implicitHeight: dialog.touchTarget
+                        enabled: !dialog.capturing
+                        currentIndex: persistedProjector.pointIndex
+                        onActivated: persistedProjector.pointIndex = currentIndex
                     }
                 }
 

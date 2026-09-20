@@ -32,6 +32,21 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 8
 
+    // A panel started against an already measured box begins in re-pick mode:
+    // the sandbox seeds its capture from BoxLayout.txt at startup, so a corner
+    // can be corrected and written without redoing the plane and extents.
+    // "Start over" drops back to the plate step.
+    Component.onCompleted: {
+        if (!calibration.planeValid) return
+        var n = calibration.planeNormal
+        picker.planeText = "from BoxLayout.txt: n = (" + n[0].toFixed(4) + ", " +
+                           n[1].toFixed(4) + ", " + n[2].toFixed(4) + "), d = " +
+                           calibration.planeOffset.toFixed(3)
+        picker.cornerCount = 4
+        picker.mode = "corners"
+        picker.cornerText = "current layout loaded — grab a depth image, then click near a corner to re-pick it"
+    }
+
     Connections {
         target: pipe
         // Classic onSignalName: {} form - see Main.qml's Connections for why.
@@ -57,7 +72,7 @@ ColumnLayout {
                 picker.cornerCount = parseInt(f[0])
                 picker.cornerText = picker.cornerCount < 4
                     ? "next: " + picker.cornerNames[picker.cornerCount]
-                    : "four corners set"
+                    : "re-picked the " + picker.cornerNames[parseInt(f[4])] + " corner"
             } else if (key === "layoutWritten") {
                 picker.cornerText = "written — " + parseFloat(f[0]).toFixed(1) +
                                     " x " + parseFloat(f[1]).toFixed(1) + " cm"
@@ -101,7 +116,7 @@ ColumnLayout {
             ? "1. Lay a flat plate on the sand and drag a rectangle over it. The plane is fitted to that region only."
             : picker.mode === "extents"
             ? "2. Take the plate out, grab the depth image again, then drag over the bare sand to set its extents."
-            : "Extents set. Click a corner to re-pick it by hand, in order: bottom left, bottom right, upper left, upper right."
+            : "Extents set. Click near a corner to re-pick it by hand; the nearest corner is replaced."
     }
 
     // The depth image is shown at its own aspect ratio; clicks are mapped back
