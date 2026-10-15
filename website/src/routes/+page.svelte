@@ -139,9 +139,6 @@
 				</p>
 			</div>
 			<Downloads {release} {error} />
-			<p class="checkout mono">
-				From a checkout: <span>git clone {REPO_URL}.git &amp;&amp; cd ARSandbox &amp;&amp; ./install.sh</span>
-			</p>
 		</div>
 	</section>
 
@@ -479,15 +476,6 @@
 		font-size: 15px;
 	}
 	.aside code {
-		color: var(--text-2);
-	}
-	.checkout {
-		margin: 28px 0 0;
-		font-size: 13px;
-		color: var(--muted);
-		overflow-wrap: anywhere;
-	}
-	.checkout span {
 		color: var(--text-2);
 	}
 

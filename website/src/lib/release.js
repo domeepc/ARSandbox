@@ -50,6 +50,16 @@ export const TARGETS = [
 			'cd arsandbox && ./install.sh'
 		],
 		note: 'Installs build dependencies, builds Vrui 8.0 and its Kinect package if missing, then the sandbox and panel — adapting to whichever Qt and libraries your distribution ships.'
+	},
+	{
+		id: 'git',
+		label: 'Git checkout',
+		kind: 'clone · tracks master',
+		// Not a release asset: the clone needs no lookup and no download.
+		git: true,
+		match: () => false,
+		lines: (/** @type {string} */ _f) => [`git clone ${REPO_URL}.git`, 'cd ARSandbox && ./install.sh'],
+		note: 'The latest code rather than a tagged release — same installer as the source archive. Update later with git pull and ./install.sh again.'
 	}
 ];
 

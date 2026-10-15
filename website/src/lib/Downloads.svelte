@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { TARGETS, RELEASES_URL, detectTarget, isLinux, formatSize } from './release.js';
+	import { TARGETS, REPO_URL, RELEASES_URL, detectTarget, isLinux, formatSize } from './release.js';
 
 	/** @type {{ release: import('./release.js').Release | null, error: string }} */
 	let { release, error } = $props();
@@ -16,7 +16,7 @@
 
 	const target = $derived(TARGETS.find((t) => t.id === selected) ?? TARGETS[0]);
 	const asset = $derived(release?.assets.find((a) => target.match(a.name)));
-	const lines = $derived(asset ? target.lines(asset.name) : []);
+	const lines = $derived(target.git ? target.lines('') : asset ? target.lines(asset.name) : []);
 
 	async function copy() {
 		await navigator.clipboard.writeText(lines.join('\n'));
@@ -48,7 +48,37 @@
 	</div>
 
 	<div class="panel" role="tabpanel">
-		{#if error || (release && !asset)}
+		{#if target.git}
+			<div class="head">
+				<div class="file">
+					<svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+						<rect x="4" y="4" width="32" height="32" rx="6" fill="#161C19" stroke="#3A4741" stroke-width="1.4" />
+						<g fill="none" stroke="#E3B25B" stroke-width="1.4" stroke-linecap="round">
+							<path d="M14 12v16M14 17c0 4 12 2 12 7" />
+						</g>
+						<circle cx="14" cy="12" r="2.2" fill="#161C19" stroke="#E3B25B" stroke-width="1.4" />
+						<circle cx="14" cy="28" r="2.2" fill="#161C19" stroke="#E3B25B" stroke-width="1.4" />
+						<circle cx="26" cy="24" r="2.2" fill="#5EC2C9" />
+					</svg>
+					<div>
+						<div class="name mono">{REPO_URL.replace('https://', '')}</div>
+						<div class="meta mono">git clone · master</div>
+					</div>
+				</div>
+				<a class="ghost" href={REPO_URL}>View on GitHub</a>
+			</div>
+
+			<div class="body">
+				<div class="eyebrow mono">In the folder you want it in</div>
+				<div class="term">
+					{#each lines as line}
+						<div class="mono"><span class="prompt">{'$ '}</span>{line}</div>
+					{/each}
+					<button class="copy mono" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+				</div>
+				<p class="note">{target.note}</p>
+			</div>
+		{:else if error || (release && !asset)}
 			<div class="body">
 				<p class="note">
 					{error ? `Could not reach GitHub (${error}).` : `${release?.tag_name} has no build for this target.`}
