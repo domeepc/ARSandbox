@@ -17,15 +17,21 @@ command -v udevadm >/dev/null 2>&1 && udevadm control --reload-rules && udevadm 
 #
 # The account is the one that installed the package: dpkg and rpm run this as
 # root, but `sudo apt install` leaves SUDO_UID behind and a graphical install
-# through pkexec leaves PKEXEC_UID. If neither is set - an install from a root
-# shell, or an unattended one - the directories stay root-owned and the
-# calibration is a sudo away, so say which command fixes that rather than
-# opening them to everyone. No-op on removal, when the directories are gone.
+# through pkexec leaves PKEXEC_UID. A double-click install (App Center, GNOME
+# Software) goes through the root PackageKit daemon and leaves neither, so fall
+# back to whoever owns the active graphical session. If that fails too - an
+# unattended install - the directories stay root-owned; the arsandbox launcher
+# then asks for a password once and fixes them, rather than opening them to
+# everyone. No-op on removal, when the directories are gone.
 operator_uid=${SUDO_UID:-${PKEXEC_UID:-}}
+if [ -z "$operator_uid" ] && command -v loginctl >/dev/null 2>&1; then
+	session=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null)
+	[ -n "$session" ] && operator_uid=$(loginctl show-session "$session" -p User --value 2>/dev/null)
+fi
 for d in /opt/arsandbox/etc/SARndbox-2.8 /opt/arsandbox/etc/Vrui-8.0/Kinect-3.10; do
 	[ -d "$d" ] || continue
 	if [ -n "$operator_uid" ]; then
-		chown -R "$operator_uid:${SUDO_GID:-$operator_uid}" "$d"
+		chown -R "$operator_uid:$(id -g "$operator_uid")" "$d"
 		chmod -R u+rwX,go+rX,go-w "$d"
 	else
 		chmod -R go-w "$d"

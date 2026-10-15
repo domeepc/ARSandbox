@@ -161,6 +161,7 @@ jobs:
             --depends qml6-module-qtquick-controls --depends qml6-module-qtquick-layouts \
             --depends qml6-module-qtquick-window --depends qml6-module-qtqml-workerscript \
             --depends qml6-module-qtquick-templates --depends qml6-module-qt-labs-settings \
+            --config-files /opt/arsandbox/etc/SARndbox-2.8 \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
 
@@ -309,6 +310,7 @@ jobs:
             --depends qml-module-qtquick-controls2 --depends qml-module-qtquick-layouts \
             --depends qml-module-qtquick-window2 --depends qml-module-qtquick-templates2 \
             --depends qml-module-qt-labs-settings \
+            --config-files /opt/arsandbox/etc/SARndbox-2.8 \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
 
@@ -370,8 +372,32 @@ jobs:
             --depends mesa-libGL --depends mesa-libGLU \
             --depends gnu-free-mono-fonts --depends gnu-free-sans-fonts --depends gnu-free-serif-fonts \
             --depends qt6-qtdeclarative \
+            --config-files /opt/arsandbox/etc/SARndbox-2.8 \
             --after-install packaging/udev-reload.sh --after-remove packaging/udev-reload.sh \
             -C stageroot opt usr
+
+      - name: Sign the .rpm
+        # Embedded signature, so `rpm -K` and dnf can check it once the user has
+        # imported arsandbox-signing-key.asc from the release. The .deb has no
+        # equivalent apt checks; SHA256SUMS.asc in the release job covers it.
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          [ -n "$GPG_PRIVATE_KEY" ] || { echo "::error::GPG_PRIVATE_KEY secret is not set"; exit 1; }
+          dnf install -y rpm-sign gnupg2
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          PASSFILE=$(mktemp)
+          printf '%s' "$GPG_PASSPHRASE" > "$PASSFILE"
+          rpmsign --addsign --define "_gpg_name $KEYID" \
+            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-file $PASSFILE" \
+            ./*.rpm
+          rm -f "$PASSFILE"
+          # Prove the signature verifies against the public half before shipping.
+          gpg --armor --export "$KEYID" > signing-key.asc
+          rpm --import signing-key.asc
+          rpm -K ./*.rpm | tee /dev/stderr | grep -q 'signatures OK'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -391,11 +417,34 @@ jobs:
         with:
           path: artifacts
 
+      - name: Sign the checksums
+        # One signature over every file's SHA-256, so the .deb and the source
+        # tarball are covered too. download-artifact nests each artifact in its
+        # own directory; flatten first so SHA256SUMS names files as users get them.
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          [ -n "$GPG_PRIVATE_KEY" ] || { echo "::error::GPG_PRIVATE_KEY secret is not set"; exit 1; }
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+          mkdir dist
+          find artifacts -type f -exec mv -t dist {} +
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          PASSFILE=$(mktemp)
+          printf '%s' "$GPG_PASSPHRASE" > "$PASSFILE"
+          gpg --batch --pinentry-mode loopback --passphrase-file "$PASSFILE" \
+            --local-user "$KEYID" --armor --detach-sign SHA256SUMS
+          rm -f "$PASSFILE"
+          gpg --armor --export "$KEYID" > arsandbox-signing-key.asc
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          files: artifacts/**/*
+          files: dist/*
           generate_release_notes: true
           body: |
             Built from commit `${{ needs.source.outputs.commit }}`. Every package's description
@@ -450,6 +499,28 @@ jobs:
             launcher now runs the copies under `/opt/arsandbox/bin` regardless,
             but if you start `sandbox-control` by hand, check
             `sandbox-control --version` says this tag and not something older.
+
+            The calibration is saved under `/opt/arsandbox/etc` and is kept
+            across upgrades. If the installer could not tell which user runs the
+            sandbox (e.g. an unattended install), the first `arsandbox` launch
+            asks for your password once to hand those directories over.
+
+            ## Verify the download
+
+            Every release is signed by Domagoj Milardovic. Check the files you
+            downloaded before installing:
+
+            ```bash
+            gpg --import arsandbox-signing-key.asc
+            gpg --verify SHA256SUMS.asc SHA256SUMS
+            sha256sum -c --ignore-missing SHA256SUMS
+            ```
+
+            The `.rpm` also carries an embedded signature:
+            `sudo rpm --import arsandbox-signing-key.asc && rpm -K arsandbox-*.rpm`.
+            A key shipped beside the files only proves they match each other;
+            check its fingerprint (`gpg --show-keys arsandbox-signing-key.asc`)
+            against one you got from the maintainer directly.
 
             Like the rest of this workflow, the packages are built without a
             Kinect attached and are not hardware-tested in CI; if one doesn't
