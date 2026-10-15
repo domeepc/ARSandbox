@@ -125,6 +125,12 @@ else
 	grep -q "#include <cstddef>" Vrui/Vislets/FrameRateViewer.h || \
 		sed -i '/#include <Vrui\/Vislet.h>/a #include <cstddef>' Vrui/Vislets/FrameRateViewer.h
 
+	# Vrui only uses the Debian multiarch lib dir on x86_64. On aarch64 (Jetson
+	# Nano) it falls back to plain lib, misses /usr/lib/aarch64-linux-gnu/dbus-1.0
+	# /include and fails with "dbus/dbus-arch-deps.h: No such file".
+	grep -q 'HOST_ARCH)-linux-gnu' BuildRoot/SystemDefinitions || \
+		sed -i 's/ifeq (\$(HOST_ARCH),x86_64)/ifneq ($(filter x86_64 aarch64,$(HOST_ARCH)),)/; s/x86_64-linux-gnu/$(HOST_ARCH)-linux-gnu/g' BuildRoot/SystemDefinitions
+
 	make -j"$JOBS" INSTALLDIR="$PREFIX"
 	sudo make INSTALLDIR="$PREFIX" install
 	sudo make INSTALLDIR="$PREFIX" installudevrules

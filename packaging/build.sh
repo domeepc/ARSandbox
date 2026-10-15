@@ -69,6 +69,11 @@ fi
 grep -q "#include <cstddef>" Vrui/Vislets/FrameRateViewer.h || \
 	sed -i '/#include <Vrui\/Vislet.h>/a #include <cstddef>' Vrui/Vislets/FrameRateViewer.h
 
+# See install.sh: Vrui only uses the multiarch lib dir on x86_64, which breaks
+# the dbus include path on aarch64 (Jetson Nano).
+grep -q 'HOST_ARCH)-linux-gnu' BuildRoot/SystemDefinitions || \
+	sed -i 's/ifeq (\$(HOST_ARCH),x86_64)/ifneq ($(filter x86_64 aarch64,$(HOST_ARCH)),)/; s/x86_64-linux-gnu/$(HOST_ARCH)-linux-gnu/g' BuildRoot/SystemDefinitions
+
 make -j"$JOBS" INSTALLDIR="$PREFIX"
 make INSTALLDIR="$STAGEPREFIX" install
 
