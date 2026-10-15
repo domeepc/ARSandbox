@@ -326,9 +326,13 @@ jobs:
     steps:
       # Without git in the container, checkout falls back to a plain download
       # with no .git, and both the package's commit hash and the panel's
-      # --version (git describe) fail.
+      # --version (git describe) fail. The workspace belongs to the runner user
+      # while the container runs as root, so later steps also need it marked
+      # safe; checkout only does that for its own step.
       - name: Install git
-        run: dnf install -y git
+        run: |
+          dnf install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
