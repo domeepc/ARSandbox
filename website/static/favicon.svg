@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+	<defs>
+		<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#2b3a55"/>
+			<stop offset="1" stop-color="#1b2740"/>
+		</linearGradient>
+	</defs>
+
+	<rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+
+	<!-- Topographic contours, colored like the sandbox's own elevation map:
+	     water/lowland blue-green rising through yellow and brown to a white peak. -->
+	<path d="M128 208c-46 0-80-24-80-56 0-34 34-64 80-64s80 30 80 64c0 32-34 56-80 56z" fill="#3f7a5c"/>
+	<path d="M128 192c-34 0-60-18-60-42 0-26 26-48 60-48s60 22 60 48c0 24-26 42-60 42z" fill="#8fae4a"/>
+	<path d="M128 176c-23 0-42-13-42-30 0-18 19-34 42-34s42 16 42 34c0 17-19 30-42 30z" fill="#d8c24a"/>
+	<path d="M128 160c-13 0-24-8-24-19 0-11 11-21 24-21s24 10 24 21c0 11-11 19-24 19z" fill="#b9713f"/>
+	<circle cx="128" cy="146" r="11" fill="#f4efe6"/>
+</svg>
