@@ -1,5 +1,6 @@
 #include "calibration.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -12,8 +13,6 @@
 #include <cmath>
 
 namespace {
-
-const QString kinectConfigDir="/usr/local/etc/Vrui-8.0/Kinect-3.10";
 
 double dot(const double a[3],const double b[3])
 	{
@@ -38,17 +37,29 @@ Calibration::Calibration(const QString& sSandboxDir,QObject* parent)
 	readBoxLayout();
 	}
 
+QString Calibration::kinectConfigDir() const
+	{
+	/* The Kinect package writes intrinsics into <installdir>/etc/Vrui-8.0/Kinect-3.10:
+	   /opt/arsandbox for a packaged install, /usr/local for install.sh. The
+	   sandbox directory is the install root for the former and the in-tree
+	   sarndbox/ (no etc/Vrui-8.0 inside) for the latter, so probe it first. */
+	const QString packaged=sandboxDir+"/etc/Vrui-8.0/Kinect-3.10";
+	if(QDir(packaged).exists())
+		return packaged;
+	return "/usr/local/etc/Vrui-8.0/Kinect-3.10";
+	}
+
 bool Calibration::intrinsicsDone() const
 	{
 	/* Vrui's Kinect package writes one file per camera serial number, so any
 	   match counts rather than a fixed name: */
-	QDir dir(kinectConfigDir);
+	QDir dir(kinectConfigDir());
 	return !dir.entryList(QStringList()<<"IntrinsicParameters-*.dat",QDir::Files).isEmpty();
 	}
 
 QString Calibration::intrinsicsSerial() const
 	{
-	QDir dir(kinectConfigDir);
+	QDir dir(kinectConfigDir());
 	const QStringList files=dir.entryList(QStringList()<<"IntrinsicParameters-*.dat",QDir::Files);
 	if(files.isEmpty())
 		return QString();
@@ -205,16 +216,10 @@ bool Calibration::launch(const QString& program,const QStringList& arguments)
 
 bool Calibration::runKinectUtil()
 	{
-	return launch("KinectUtil",QStringList()<<"getCalib"<<"0");
-	}
-
-bool Calibration::runRawKinectViewer()
-	{
-	return launch("RawKinectViewer",QStringList()<<"-compress"<<"0");
-	}
-
-bool Calibration::runCalibrateProjector(int width,int height)
-	{
-	return launch(sandboxDir+"/bin/CalibrateProjector",
-	              QStringList()<<"-s"<<QString::number(width)<<QString::number(height));
+	/* The copy beside the sandbox first: on a machine that once ran install.sh,
+	   /usr/local/bin/KinectUtil shadows the packaged one on PATH. */
+	QString program=sandboxDir+"/bin/KinectUtil";
+	if(!QFileInfo(program).isExecutable())
+		program="KinectUtil";
+	return launch(program,QStringList()<<"getCalib"<<"0");
 	}

@@ -1,7 +1,7 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import Qt.labs.settings
+import QtQuick 2.9
+import QtQuick.Controls 2.2
+import QtQuick.Layouts 1.3
+import Qt.labs.settings 1.0
 
 // Calibration page. Grouped into the two physical devices being calibrated,
 // because a step's meaning depends on which one it belongs to.
@@ -25,9 +25,19 @@ Item {
         property real seaLevel: 0
     }
 
+    // How many targets a projector calibration collects. The sandbox lays them
+    // out on a 3-column grid and needs at least 6; more points average out
+    // more noise at the cost of holding the disk still that many more times.
+    Settings {
+        id: persistedProjector
+        category: "projector"
+        property int pointIndex: 2
+    }
+
     Connections {
         target: pipe
-        function onConnectedChanged() {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onConnectedChanged: {
             if (pipe.connected)
                 dialog.sendSeaLevel()
         }
@@ -35,59 +45,127 @@ Item {
 
     // Projector calibration progress, driven by the sandbox's status messages.
     property bool capturing: false
+    property int pointCount: 12
     property string projectorState: ""
-    property bool capturingCorners: false
-    property string cornerState: ""
+    // Whether projectorState is reporting a problem rather than progress, so it
+    // can be shown as one instead of reading like a status line.
+    property bool projectorFailed: false
+
+    // Turns a "calibrationFailed projector <reason> [detail...]" message into
+    // something that says what to do about it. Every reason the sandbox can send
+    // is listed; an unrecognised one still shows its raw text rather than being
+    // swallowed, so a newer sandbox against an older panel degrades to something
+    // the user can at least report.
+    function projectorFailureText(f) {
+        var reason = f[0]
+        if (reason === "flatCapture")
+            return "failed: every target was at nearly the same height (" +
+                   parseFloat(f[1]).toFixed(1) + " cm apart). The solve needs real " +
+                   "depth variation — hold the disk at clearly different heights " +
+                   "above the sand, not all resting on it."
+        if (reason === "inconsistentWeights")
+            return "failed: the captured points do not describe one projector. " +
+                   "Usually at least one capture locked onto something other than " +
+                   "the disk — a hand, or the box rim. Capture again, keeping your " +
+                   "hands out of view when you press capture."
+        if (reason === "noExtractor")
+            return "failed: the depth camera has no intrinsic calibration, so the " +
+                   "target cannot be located. Run the camera calibration first."
+        if (reason === "writeError")
+            return "failed: could not write ProjectorMatrix.dat. Check that the " +
+                   "sandbox's etc/SARndbox-2.8 directory is writable."
+        if (reason === "badSize")
+            return "failed: no usable projector size (" + f.slice(1).join(" ") +
+                   "). Pick the projector in the list below before starting."
+        if (reason === "notRunning")
+            return "failed: no calibration is running. Press Start, then capture " +
+                   "each point as the crosshair moves."
+        if (reason === "badCommand")
+            return "failed: the sandbox rejected the command. The panel and the " +
+                   "sandbox are probably different versions."
+        return "failed: " + f.join(" ")
+    }
     property bool projectorView: false
 
     Connections {
         target: pipe
-        function onStatus(key, value) {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onStatus: {
             if (key === "projectorView") { dialog.projectorView = (value === "on"); return }
             if (key !== "calibrationStarted" && key !== "calibrationProgress" &&
                 key !== "calibrationDone" && key !== "calibrationAborted" &&
                 key !== "calibrationFailed" && key !== "calibrationNoTarget" &&
-                key !== "calibrationRejected") return
+                key !== "calibrationCapturing" && key !== "calibrationBackground" &&
+                key !== "calibrationAmbiguous" && key !== "calibrationLostTarget") return
 
             var f = value.split(" ")
-
-            if (f[0] === "corners") {
-                if (key === "calibrationStarted") {
-                    dialog.capturingCorners = true
-                    dialog.cornerState = "place the disk on the " + f.slice(2).join(" ") + " corner"
-                } else if (key === "calibrationProgress") {
-                    dialog.cornerState = "corner " + (parseInt(f[1]) + 1) + " of 4 \u2014 " +
-                                         f.slice(3).join(" ")
-                } else if (key === "calibrationNoTarget") {
-                    dialog.cornerState = "target not visible \u2014 place the disk flat on the corner"
-                } else if (key === "calibrationDone") {
-                    dialog.capturingCorners = false
-                    dialog.cornerState = "measured " + parseFloat(f[2]).toFixed(1) + " x " +
-                                         parseFloat(f[3]).toFixed(1) + " cm"
-                    calibration.refresh()
-                } else {
-                    dialog.capturingCorners = false
-                    dialog.cornerState = key === "calibrationRejected"
-                        ? "rejected: a corner was not on the sand" : ""
-                }
-                return
-            }
-
             if (f[0] !== "projector") return
 
             if (key === "calibrationStarted") {
                 dialog.capturing = true
+                dialog.projectorFailed = false
+                dialog.pointCount = parseInt(f[1])
                 dialog.projectorState = "point 1 of " + f[1]
+            } else if (key === "calibrationBackground") {
+                // The sandbox records the bare sand for ~2 s before it can tell
+                // the target from it. Anything in view meanwhile is baked into
+                // that background and becomes undetectable, so say so.
+                dialog.capturing = true
+                dialog.projectorFailed = false
+                dialog.projectorState = f[1] === "ready"
+                    ? "point 1 of " + dialog.pointCount + " — bring the target in"
+                    : "capturing the background — keep hands and the target out of view for 2 s"
             } else if (key === "calibrationProgress") {
+                // Also latches capturing on, not just the point number: this is
+                // the only message a panel that started or reconnected part-way
+                // through a calibration receives, and without it the page keeps
+                // offering Start for a calibration the sandbox is already
+                // running, with no Capture button to advance it.
+                dialog.capturing = true
                 dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2]
+            } else if (key === "calibrationCapturing") {
+                // A capture is now a ~2s run of observations, not an instant, so
+                // the operator has to be told to keep still for it.
+                dialog.capturing = true
+                dialog.projectorFailed = false
+                dialog.projectorState = "point " + (parseInt(f[1]) + 1) + " of " + f[2] +
+                                        " — hold the target still…"
+            } else if (key === "calibrationAmbiguous") {
+                // The run stalled, but the calibration itself is still running:
+                // capturing stays on so the Capture button is there to retry.
+                dialog.capturing = true
+                dialog.projectorFailed = true
+                dialog.projectorState = "capture stopped: " + f[1] + " objects in view look like " +
+                    "the target, so the sandbox cannot tell which one is on the crosshair. Take " +
+                    "everything except the disk out of the sandbox — including your hand — and capture again."
+            } else if (key === "calibrationLostTarget") {
+                dialog.capturing = true
+                dialog.projectorFailed = true
+                dialog.projectorState = "capture stopped after " + f[1] + " of " + f[2] +
+                    " readings: the target stopped being detected. Hold the disk still and face " +
+                    "on to the camera until the capture finishes, then capture again."
             } else if (key === "calibrationNoTarget") {
                 dialog.projectorState = "target not visible — place the disk on the crosshair"
             } else if (key === "calibrationDone") {
                 dialog.capturing = false
-                dialog.projectorState = "done, residual " + parseFloat(f[1]).toFixed(1) + " px"
+                // f[2] is "ok" or "poor" - the sandbox judges the residual against
+                // the projector's own size, which it knows and this page does not.
+                dialog.projectorFailed = (f[2] === "poor")
+                dialog.projectorState = dialog.projectorFailed
+                    ? "written, but the fit is bad (residual " + parseFloat(f[1]).toFixed(1) +
+                      " px). Check the projector resolution above matches what is actually " +
+                      "being projected, then capture again."
+                    : "done, residual " + parseFloat(f[1]).toFixed(1) + " px"
                 calibration.refresh()
+            } else if (key === "calibrationFailed") {
+                // The reason used to be dropped on the floor here, which is what
+                // made a failed calibration look like the button doing nothing.
+                dialog.capturing = false
+                dialog.projectorFailed = true
+                dialog.projectorState = dialog.projectorFailureText(f.slice(1))
             } else {
                 dialog.capturing = false
+                dialog.projectorFailed = false
                 dialog.projectorState = ""
             }
         }
@@ -102,85 +180,6 @@ Item {
         var n = calibration.planeNormal
         pipe.send("heightMapPlane " + n[0].toFixed(6) + " " + n[1].toFixed(6) + " " +
                   n[2].toFixed(6) + " " + (calibration.planeOffset + seaLevel).toFixed(4))
-    }
-
-    component Heading: Label {
-        Layout.fillWidth: true
-        Layout.topMargin: dialog.gap
-        font.pixelSize: 13
-        font.bold: true
-        font.capitalization: Font.AllUppercase
-        opacity: 0.85
-    }
-
-    component Note: Label {
-        Layout.fillWidth: true
-        wrapMode: Text.Wrap
-        font.pixelSize: 13
-        opacity: 0.85
-    }
-
-    component Step: RowLayout {
-        id: step
-        property string label
-        property string detail
-        property bool done: false
-        property string action: "Run"
-        signal triggered()
-
-        Layout.fillWidth: true
-        spacing: dialog.gap
-
-        Rectangle {
-            width: 12; height: 12; radius: 6
-            Layout.alignment: Qt.AlignVCenter
-            color: step.done ? "#3fb950" : "#8b949e"
-        }
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 0
-            Label { text: step.label; font.pixelSize: 15 }
-            Label {
-                text: step.detail
-                visible: step.detail !== ""
-                font.pixelSize: 12
-                font.family: "monospace"
-                opacity: 0.85
-            }
-        }
-        Button {
-            text: step.action
-            implicitHeight: dialog.touchTarget
-            onClicked: step.triggered()
-        }
-    }
-
-    // A measured value with a pass/fail marker, so a bad measurement is visible
-    // rather than having to be inferred from the sandbox looking wrong later.
-    component Check: RowLayout {
-        id: check
-        property string label
-        property string value
-        property bool ok: true
-        property string hint
-
-        Layout.fillWidth: true
-        spacing: dialog.gap
-
-        Label { text: check.label; font.pixelSize: 14; Layout.preferredWidth: 190 }
-        Label {
-            text: check.value
-            font.pixelSize: 14
-            font.family: "monospace"
-            Layout.preferredWidth: 130
-        }
-        Label {
-            text: check.ok ? "ok" : check.hint
-            font.pixelSize: 13
-            color: check.ok ? "#3fb950" : "#d29922"
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-        }
     }
 
     ScrollView {
@@ -308,15 +307,28 @@ Item {
                             : (calibration.projectorDone
                                ? "measured " + calibration.projectorDate
                                : "not measured — sandbox falls back to the default projection")
+                    alert: dialog.projectorFailed
                     done: calibration.projectorDone
                     action: dialog.capturing ? "Abort" : "Start"
                     onTriggered: {
-                        if (dialog.capturing)
+                        if (dialog.capturing) {
                             pipe.send("calibrateProjector abort")
-                        else
-                            pipe.send("calibrateProjector start " +
-                                      calibration.screens[screenBox.currentIndex].width + " " +
-                                      calibration.screens[screenBox.currentIndex].height + " 12")
+                            return
+                        }
+                        // Guarded rather than indexed straight into: with no
+                        // screen selected this threw a TypeError, which QML
+                        // reports only on the console and which aborts the
+                        // handler before anything is sent -- so the button
+                        // genuinely did nothing, with no way to tell from here.
+                        var screen = calibration.screens[screenBox.currentIndex]
+                        if (!screen || !screen.width || !screen.height) {
+                            dialog.projectorFailed = true
+                            dialog.projectorState = "failed: no projector selected. " +
+                                "Pick the display the sandbox is projecting onto in the list below."
+                            return
+                        }
+                        pipe.send("calibrateProjector start " +
+                                  screen.width + " " + screen.height + " " + pointsBox.currentText)
                     }
                 }
 
@@ -332,10 +344,11 @@ Item {
 
                 Note {
                     visible: dialog.capturing
-                    text: "The sandbox is showing a crosshair on the projection. Place the " +
-                          "disk target so its centre is on the crosshair and lies flat on the " +
-                          "sand, take your hands out of view, then capture. The crosshair " +
-                          "turns green when the target has been found."
+                    text: "The sandbox is showing a white crosshair on the projection. Hold " +
+                          "the disk target above the sand, facing the camera, with its centre " +
+                          "on the crosshair — not resting on the sand, which is removed as " +
+                          "background. Vary the height between points. When the target is " +
+                          "detected it is drawn as a blue disk on the projection; then capture."
                 }
 
                 RowLayout {
@@ -348,6 +361,19 @@ Item {
                         implicitHeight: dialog.touchTarget
                         // On a two-display desk the projector is normally secondary.
                         currentIndex: count - 1
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "Calibration points"; font.pixelSize: 15; Layout.fillWidth: true }
+                    ComboBox {
+                        id: pointsBox
+                        model: ["6", "9", "12", "15", "18", "24"]
+                        implicitHeight: dialog.touchTarget
+                        enabled: !dialog.capturing
+                        currentIndex: persistedProjector.pointIndex
+                        onActivated: persistedProjector.pointIndex = currentIndex
                     }
                 }
 
@@ -373,8 +399,10 @@ Item {
                 Note {
                     text: "These are current logical sizes; a screen rotated with xrandr " +
                           "reports its rotated dimensions. Check this matches the projector " +
-                          "before capturing — a wrong size produces a defective calibration " +
-                          "with no error reported. Run it full screen on the projector (F11) " +
+                          "before capturing — a wrong size can produce a defective calibration " +
+                          "that still solves: a poor fit is only reported when the residual " +
+                          "exceeds the threshold, so no complaint here does not mean the size " +
+                          "was right. Run it full screen on the projector (F11) " +
                           "and align a flat circular target with a marked centre."
                 }
 

@@ -1,7 +1,7 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import Qt.labs.settings
+import QtQuick 2.9
+import QtQuick.Controls 2.2
+import QtQuick.Layouts 1.3
+import Qt.labs.settings 1.0
 
 // Water simulation controls.
 Item {
@@ -22,64 +22,13 @@ Item {
 
     Connections {
         target: pipe
-        function onConnectedChanged() {
+        // Classic onSignalName: {} form - see Main.qml's Connections for why.
+        onConnectedChanged: {
             if (pipe.connected) {
                 pipe.send("waterSpeed " + persisted.waterSpeed.toFixed(2))
                 pipe.send("waterMaxSteps " + persisted.waterMaxSteps.toFixed(0))
                 pipe.send("waterAttenuation " + persisted.waterAttenuation.toFixed(4))
             }
-        }
-    }
-
-    component Setting: ColumnLayout {
-        id: setting
-        property string label
-        property string command
-        property real from: 0
-        property real to: 1
-        property int decimals: 2
-
-        Layout.fillWidth: true
-        spacing: 4
-
-        RowLayout {
-            Layout.fillWidth: true
-            Label { text: setting.label; font.pixelSize: 16; Layout.fillWidth: true }
-            Label {
-                text: slider.value.toFixed(setting.decimals)
-                font.pixelSize: 16; font.family: "monospace"; opacity: 0.9
-            }
-        }
-
-        // Sends on release rather than per pixel: the sandbox reads its pipe once
-        // per frame, so streaming every intermediate value would just fill it.
-        Slider {
-            id: slider
-            Layout.fillWidth: true
-            implicitHeight: page.touchTarget
-            from: setting.from
-            to: setting.to
-            value: persisted[setting.command]
-            enabled: pipe.connected
-            onPressedChanged: if (!pressed) {
-                persisted[setting.command] = value
-                pipe.send(setting.command + " " + value.toFixed(setting.decimals))
-            }
-        }
-    }
-
-    component Section: ColumnLayout {
-        id: section
-        property string title
-        Layout.fillWidth: true
-        spacing: page.gap
-        Label {
-            text: section.title
-            font.pixelSize: 13
-            font.bold: true
-            font.capitalization: Font.AllUppercase
-            opacity: 0.85
-            Layout.topMargin: page.gap
         }
     }
 
@@ -99,18 +48,27 @@ Item {
                     command: "waterSpeed"
                     from: 0.0; to: 4.0
                     decimals: 2
+                    touchTarget: page.touchTarget
+                    value: persisted.waterSpeed
+                    onCommitted: function(v) { persisted.waterSpeed = v }
                 }
                 Setting {
                     label: "Max steps per frame"
                     command: "waterMaxSteps"
                     from: 1; to: 80
                     decimals: 0
+                    touchTarget: page.touchTarget
+                    value: persisted.waterMaxSteps
+                    onCommitted: function(v) { persisted.waterMaxSteps = v }
                 }
                 Setting {
                     label: "Attenuation"
                     command: "waterAttenuation"
                     from: 0.0; to: 0.05
                     decimals: 4
+                    touchTarget: page.touchTarget
+                    value: persisted.waterAttenuation
+                    onCommitted: function(v) { persisted.waterAttenuation = v }
                 }
 
                 Button {

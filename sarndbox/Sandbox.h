@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #ifndef SANDBOX_INCLUDED
 #define SANDBOX_INCLUDED
 
+#include <atomic>
 #include <vector>
 #include <string>
 #include <Threads/Mutex.h>
@@ -67,6 +68,7 @@ class Lightsource;
 }
 namespace Kinect {
 class Camera;
+class DirectFrameSource;
 }
 class FrameFilter;
 class DepthImageRenderer;
@@ -214,8 +216,10 @@ class Sandbox:public Vrui::Application,public GLObject
 	Threads::TripleBuffer<Kinect::FrameBuffer> filteredFrames; // Triple buffer for incoming filtered depth frames
 	DepthImageRenderer* depthImageRenderer; // Object managing the current filtered depth image
 	Point basePlaneCorners[4]; // Corners of the sandbox area, as read from the layout file
+	Point diskFilterCorners[4]; // Same corners in the unscaled (raw camera-space cm) units that DiskExtractor reports disk centers in, used by isOverSandbox
 	ONTransform boxTransform; // Transformation from camera space to baseplane space (x along long sandbox axis, z up)
 	Scalar boxSize; // Radius of sphere around sandbox area
+	double scaleFactor; // Scale factor from raw camera-space cm to the simulation's units (scaleFactor/100)
 	Box bbox; // Bounding box around all potential surfaces
 	WaterTable2* waterTable; // Water flow simulation object
 	double waterSpeed; // Relative speed of water flow simulation
@@ -290,6 +294,9 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::DiskExtractor* diskExtractor; // Finds the calibration target in the depth stream
 	Kinect::ProjectorType* calibrationFacade; // Renders the raw 3D video as the backdrop of the calibration view
 	bool calibratingProjector; // Flag whether a projector calibration is in progress
+	std::atomic<bool> backgroundCaptureDone; // Set from the camera thread when the background capture started by startProjectorCalibration has finished
+	bool backgroundCaptureInFlight; // Flag whether a capture requested by startProjectorCalibration has yet to report back; main thread only
+	std::atomic<bool> backgroundReady; // Flag whether background removal is active, i.e., disk extractions can be trusted
 	unsigned int projectorImageSize[2]; // Projector image size in pixels
 	unsigned int tiePointIndex; // Index of the target currently being shown
 	unsigned int numTiePoints; // Number of targets in the sequence
@@ -298,6 +305,17 @@ class Sandbox:public Vrui::Application,public GLObject
 	bool haveDisk; // Flag whether a disk is currently visible
 	bool diskEverSeenThisCalibration; // Flag whether a disk has been detected at least once since the current calibration started
 	double lastDiskTime; // Application time at which a disk was last extracted
+
+	/* Each target is measured over a run of consecutive observations rather than
+	   one, as the standalone CalibrateProjector does: a single frame's disk
+	   centre carries the sensor's full per-frame noise straight into the solve,
+	   and twelve such points are not enough to average it back out: */
+	static const unsigned int numTiePointFrames=60; // Observations collected per target, ~2s at 30Hz
+	static const double captureRunTimeout; // Seconds without a usable extraction before a run is abandoned
+	bool capturingTiePoint; // Flag whether observations are being collected for the current target
+	std::vector<Geometry::Point<double,3> > pendingTiePointSamples; // Disk centres collected for the current target
+	double tiePointCaptureDeadline; // Application time at which an incomplete run is abandoned
+	std::atomic<unsigned int> lastCandidateCount; // Plausible disks in the most recent extraction, for reporting why a run stalled
 	std::string projectionMatrixFileName; // Path of the projector matrix file to write
 
 	/* Depth frames fed to the disk extractor are averaged over a short ring
@@ -310,12 +328,16 @@ class Sandbox:public Vrui::Application,public GLObject
 	Kinect::FrameBuffer averageDepthFrames(const Kinect::FrameBuffer& newFrame); // Pushes newFrame into the ring and returns the pixelwise average for disk extraction
 
 	void diskExtractionCallback(const Kinect::DiskExtractor::DiskList& disks); // Receives extracted disks from the extractor thread
+	void backgroundCaptureCallback(Kinect::DirectFrameSource& source); // Called from the camera thread when the calibration background has been captured
 	#if !KINECT_CONFIG_USE_SHADERPROJECTOR
 	void facadeMeshCallback(const Kinect::MeshBuffer& meshBuffer); // Wakes the main thread when the facade has a new mesh
 	#endif
+	bool isOverSandbox(const Point& p) const; // Returns whether a camera-space point lies over the measured sandbox footprint
 	Geometry::Point<double,2> getTiePointTarget(unsigned int index) const; // Returns the projector-space position of the given target
 	void startProjectorCalibration(unsigned int width,unsigned int height,unsigned int tiePointCount); // Begins a projector calibration
-	void captureTiePoint(void); // Records the currently visible disk against the current target
+	void captureTiePoint(void); // Begins collecting observations of the currently visible disk against the current target
+	void collectTiePointSample(void); // Adds one observation to the current run, committing it when the run is full
+	void abandonTiePointRun(void); // Gives up on an interrupted run and reports why it stalled
 	void finishProjectorCalibration(void); // Solves for the projection matrix and writes it
 	void abortProjectorCalibration(void); // Cancels a calibration in progress
 	void restoreDepthStream(void); // Turns background removal back off after a calibration

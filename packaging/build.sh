@@ -22,6 +22,26 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
+# Downloads over HTTPS and refuses an archive whose SHA-256 is not the one
+# checked in here, so a tampered or truncated download cannot become the
+# release. Digests taken from the upstream archives on 2026-09-20 and checked
+# against the sources this rig was built from.
+# Same contract as install.sh: a digest belongs to one release, so refuse a
+# version this file has no digest for rather than letting it fail later as a
+# checksum mismatch that reads like a tampered mirror.
+VRUI_SHA256=8bb1f89a649a1c86ad0fa953a86d737ff4daeccb5fbc46149b696c4ddae16e6c
+KINECT_SHA256=5ec3bd12a958bd9f087eac2464c0bffa433f24a25e939e196b2833dd8d76409e
+[ "$VRUI_VERSION" = 8.0-002 ] || \
+	{ echo "error: no checked-in SHA-256 for Vrui $VRUI_VERSION; only 8.0-002 is pinned here" >&2; exit 1; }
+[ "$KINECT_VERSION" = 3.10 ] || \
+	{ echo "error: no checked-in SHA-256 for the Kinect package $KINECT_VERSION; only 3.10 is pinned here" >&2; exit 1; }
+fetch() { # fetch <url> <sha256>: downloads into the current directory, verifies, extracts
+	local f=${1##*/}
+	wget -O "$f" "$1"
+	echo "$2  $f" | sha256sum -c - || { echo "error: checksum mismatch for $f" >&2; exit 1; }
+	tar xzf "$f"
+}
+
 STAGEPREFIX="$STAGEROOT$PREFIX"
 mkdir -p "$SRCDIR" "$STAGEPREFIX"
 
@@ -29,7 +49,7 @@ mkdir -p "$SRCDIR" "$STAGEPREFIX"
 
 say "Building Vrui $VRUI_VERSION into $PREFIX"
 cd "$SRCDIR"
-[ -d "Vrui-$VRUI_VERSION" ] || wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Vrui/Vrui-$VRUI_VERSION.tar.gz" | tar xz
+[ -d "Vrui-$VRUI_VERSION" ] || fetch "https://web.cs.ucdavis.edu/~okreylos/ResDev/Vrui/Vrui-$VRUI_VERSION.tar.gz" "$VRUI_SHA256"
 cd "Vrui-$VRUI_VERSION"
 
 # See install.sh: Vrui 8.0-002 expects the pre-1.20 OpenAL Soft
@@ -48,6 +68,11 @@ fi
 # name a type".
 grep -q "#include <cstddef>" Vrui/Vislets/FrameRateViewer.h || \
 	sed -i '/#include <Vrui\/Vislet.h>/a #include <cstddef>' Vrui/Vislets/FrameRateViewer.h
+
+# See install.sh: Vrui only uses the multiarch lib dir on x86_64, which breaks
+# the dbus include path on aarch64 (Jetson Nano).
+grep -q 'HOST_ARCH)-linux-gnu' BuildRoot/SystemDefinitions || \
+	sed -i 's/ifeq (\$(HOST_ARCH),x86_64)/ifneq ($(filter x86_64 aarch64,$(HOST_ARCH)),)/; s/x86_64-linux-gnu/$(HOST_ARCH)-linux-gnu/g' BuildRoot/SystemDefinitions
 
 make -j"$JOBS" INSTALLDIR="$PREFIX"
 make INSTALLDIR="$STAGEPREFIX" install
@@ -79,7 +104,7 @@ export LD_LIBRARY_PATH="$(sed -n 's/^VRUI_LIBDIR := //p' "$CONFIG_VRUI")${LD_LIB
 
 say "Building the Vrui Kinect package into $PREFIX"
 cd "$SRCDIR"
-[ -d "Kinect-$KINECT_VERSION" ] || wget -O - "http://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" | tar xz
+[ -d "Kinect-$KINECT_VERSION" ] || fetch "https://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/Kinect-$KINECT_VERSION.tar.gz" "$KINECT_SHA256"
 cd "Kinect-$KINECT_VERSION"
 make -j"$JOBS" VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make"
 make VRUI_MAKEDIR="$STAGEPREFIX/share/Vrui-$VRUI_MAJOR/make" INSTALLDIR="$STAGEPREFIX" install
@@ -112,8 +137,13 @@ install -m u=rw,go=r "$RESOURCEDIR"/Shaders/* "$STAGEPREFIX/$RESOURCEDIR/Shaders
 
 say "Building the control panel into $PREFIX/bin"
 cd "$REPO/control-panel"
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$JOBS"
+# See install.sh's own control panel step: the classic in-build-directory
+# invocation works on any CMake version, unlike -S/-B (3.13+) or --build's
+# own -j (3.12+).
+mkdir -p build
+SANDBOX_VERSION=$(git -C "$REPO" describe --tags --always --dirty 2>/dev/null || echo dev)
+(cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DSANDBOX_VERSION="$SANDBOX_VERSION" ..)
+cmake --build build -- -j"$JOBS"
 install -d "$STAGEPREFIX/bin"
 install -m755 build/sandbox-control "$STAGEPREFIX/bin/sandbox-control"
 
