@@ -324,6 +324,12 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:40
     steps:
+      # Without git in the container, checkout falls back to a plain download
+      # with no .git, and both the package's commit hash and the panel's
+      # --version (git describe) fail.
+      - name: Install git
+        run: dnf install -y git
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
