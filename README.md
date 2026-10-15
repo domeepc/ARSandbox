@@ -24,6 +24,7 @@ control panel, the calibration measured from this rig, and the documentation.
 | `scripts/` | Launch helper |
 | `install.sh` | One-shot installer for Debian/Ubuntu |
 | `packaging/` | Builds the `.deb`/`.rpm` releases (see below) |
+| `website/` | SvelteKit install site, published to GitHub Pages (`npm install && npm run dev` to work on it) |
 
 ## Installing
 
